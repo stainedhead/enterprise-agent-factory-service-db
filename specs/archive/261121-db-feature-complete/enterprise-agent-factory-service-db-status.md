@@ -23,11 +23,14 @@
 | 8  | Spec Review Fixes               | ✅ Complete | 2026-11-21T20:52Z | 2026-11-21T20:54Z | 2 |
 | 9  | Implement Review Fixes          | ✅ Complete | 2026-11-21T20:51Z | 2026-11-21T20:55Z | 4 |
 | 10 | Archive Fixes Spec              | ✅ Complete | 2026-11-21T20:55Z | 2026-11-21T20:56Z | 1 |
-| 11 | Final Quality Pass              | 🔄 In Progress | 2026-11-21T20:56Z | — | — |
-| 12 | Process Analysis Report         | ⬜ Pending | — | — | — |
-| 13 | Archive Spec                    | ⬜ Pending | — | — | — |
+| 11 | Final Quality Pass              | ✅ Complete | 2026-11-21T20:56Z | 2026-11-21T21:13Z | 17 |
+| 12 | Process Analysis Report         | ✅ Complete | 2026-11-21T21:13Z | 2026-11-21T21:17Z | 4 |
+| 13 | Archive Spec                    | ✅ Complete | 2026-11-21T21:17Z | 2026-11-21T21:17Z | 0 |
 | 14 | Open Pull Request               | ⬜ Pending | — | — | — |
 
 ## Notes
 
 - Run authorized by J; pre-flight questions and confirmation prompts skipped (PRD already reviewed twice).
+- Step 11 absorbed T10: X-DB-1..6 requested by -restapi via the coordinator, delivered as migration 000016; root contract PR stainedhead/enterprise-agent-factory-service#12.
+- Step 12: analysis in enterprise-agent-factory-service-db-analysis.md; git timestamps are authoritative (dashboard times above were written by hand and differ by a minute or two).
+- Step 13: the spec was archived at step 7; the archive holds the spec files, PRD snapshot, dashboard, analysis and the nested review spec.
