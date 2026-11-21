@@ -40,9 +40,9 @@ tidy:
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
-# Coverage gate: domain, usecase and authz packages must stay at or above 90%.
+# Coverage: migrate must stay at or above 90%. Set AFS_TEST_DATABASE_URL so the integration tests run.
 cover:
-	go test -cover ./migrate/...
+	go test -count=1 -cover ./migrate/...
 
 # The full quality gate. Must pass before every commit.
 gate: tidy fmt-check vet lint race build

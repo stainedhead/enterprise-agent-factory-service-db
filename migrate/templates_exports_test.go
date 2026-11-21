@@ -205,10 +205,10 @@ func TestAgentTemplates(t *testing.T) {
 	)
 
 	t.Run("agents and pools without a template are not guarded", func(t *testing.T) {
-		if err := agent(agentOld, "legacy-bot", nil, "ghcr.io/x/omp@sha256:abc"); err != nil {
+		if err := agent(agentOld, "legacy-bot", nil, "ghcr.io/x/omp@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err != nil {
 			t.Errorf("agent without template_id: %v", err)
 		}
-		if err := pool("pool_01JD3Z5Y8K2M4N6P8Q0R2S4TF6", "legacy-pool", nil, "ghcr.io/x/omp@sha256:abc"); err != nil {
+		if err := pool("pool_01JD3Z5Y8K2M4N6P8Q0R2S4TF6", "legacy-pool", nil, "ghcr.io/x/omp@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err != nil {
 			t.Errorf("pool without template_id: %v", err)
 		}
 	})

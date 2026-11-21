@@ -28,3 +28,48 @@ Decisions local to this repository. Cross-repo decisions live in the root reposi
 
 - Status: Accepted
 - Decision: enumerated values are `text` with `CHECK` constraints so they can change in a normal migration.
+
+## ADR-005 A lock timeout on every migration transaction
+
+- Status: Accepted (000015 release)
+- Context: a DDL statement that waits for a lock held by a long transaction makes every later query on
+  that table queue behind it, so a migration on rollout can stall the API. The PRD's observability NFR
+  asked for a `lock_timeout`.
+- Decision: `migrate.Up` and `migrate.Down` set `lock_timeout` locally in each migration transaction,
+  10 s by default, changeable with `WithLockTimeout` (0 disables it) and `afs-migrate --lock-timeout`.
+  It is not set on the advisory-lock wait, which must keep queueing concurrent migrators.
+- Consequences: a blocked migration fails with `55P03` and can be retried; `Up`/`Down` take variadic
+  options, so existing callers compile unchanged.
+
+## ADR-006 Prove rules from the catalog, not from a hand-kept list
+
+- Status: Accepted (000015 release)
+- Context: per-table isolation and change-feed tests drift as tables are added.
+- Decision: tests that state a rule for "every table" select the tables from the system catalog and run one
+  subtest each against a shared fixture with rows for other teams in every team table.
+- Consequences: a new team table, or a new revision table, fails CI until it is covered by RLS, a notify
+  trigger and fixture rows.
+
+## ADR-007 Derived values are set by trigger, not trusted from the writer
+
+- Status: Accepted (000015 release)
+- Context: `cost_reconciliations.status` and `api_keys.created_at` were written by callers, so a rule that
+  depended on them (variance alerting, the 90-day key expiry) could be wrong or bypassed.
+- Decision: a `BEFORE` trigger computes `status` from the row and `billing.variance_alert_pct`; another
+  sets `api_keys.created_at = now()` on insert and refuses a change.
+- Consequences: writers may omit these values; rows written before 000015 keep theirs.
+
+## ADR-008 Pre-scope lookups and reconciler writes go through named SECURITY DEFINER functions
+
+- Status: Accepted (000016 release)
+- Context: `afs-api` must find an API key or a workload before it knows the caller's team, list the team
+  directory for security operators who see no team, and the reconciler must create remediation teams
+  although it may not write desired state chosen by people (`-restapi` X-DB-1 to X-DB-4).
+- Decision: one `SECURITY DEFINER` function per path (`authenticate_api_key`, `resolve_workload`,
+  `team_directory`, `instantiate_work_order_team`), each with a pinned `search_path`, no PUBLIC execute and
+  EXECUTE for the one or two roles that need it, returning only the columns the caller needs. Policies stay
+  team-scoped; the only new policies are INSERT-only (own audit rows, security operator work order events).
+- Consequences: no service admin session is needed for a lookup, and no role gains read access to other
+  teams' rows. Each function is a reviewed entry point with catalog-checked grants
+  (`executableBy` in `migrate/service_access_test.go`); a new pre-scope need is a new function, not a
+  wider policy.
