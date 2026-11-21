@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -92,8 +93,52 @@ const lockKey = 7_302_026_1120
 // ErrChecksumMismatch means an applied migration's file was edited after it was applied.
 var ErrChecksumMismatch = errors.New("applied migration changed")
 
+// DefaultLockTimeout bounds how long one migration waits for a table lock before it fails with
+// SQLSTATE 55P03 (lock_not_available). Without it, a DDL statement queued behind a long transaction
+// blocks every later query on that table. It does not bound statement time or the advisory-lock wait
+// between concurrent migrators.
+const DefaultLockTimeout = 10 * time.Second
+
+// Option changes how Up and Down run.
+type Option func(*options)
+
+type options struct {
+	lockTimeout time.Duration
+}
+
+// WithLockTimeout sets the lock_timeout of each migration transaction. Zero disables it.
+func WithLockTimeout(d time.Duration) Option {
+	return func(o *options) { o.lockTimeout = d }
+}
+
+func resolve(opts []Option) options {
+	o := options{lockTimeout: DefaultLockTimeout}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// runInTx runs sql and the tracking statement in one transaction with the lock timeout set locally.
+func runInTx(ctx context.Context, conn *pgx.Conn, o options, sql, track string, args ...any) error {
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		// set_config with is_local = true is SET LOCAL with a bound parameter.
+		if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`,
+			strconv.FormatInt(o.lockTimeout.Milliseconds(), 10)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, sql); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, track, args...)
+		return err
+	})
+}
+
 // Up applies every pending migration, each in its own transaction, and returns how many ran.
-func Up(ctx context.Context, conn *pgx.Conn, migs []Migration) (int, error) {
+// Each transaction sets lock_timeout (DefaultLockTimeout unless WithLockTimeout is given).
+func Up(ctx context.Context, conn *pgx.Conn, migs []Migration, opts ...Option) (int, error) {
+	o := resolve(opts)
 	return withLock(ctx, conn, func() (int, error) {
 		applied, err := appliedChecksums(ctx, conn)
 		if err != nil {
@@ -107,14 +152,9 @@ func Up(ctx context.Context, conn *pgx.Conn, migs []Migration) (int, error) {
 				}
 				continue
 			}
-			err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-				if _, err := tx.Exec(ctx, m.Up); err != nil {
-					return err
-				}
-				_, err := tx.Exec(ctx, `INSERT INTO public.afs_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)`,
-					m.Version, m.Name, m.Checksum())
-				return err
-			})
+			err := runInTx(ctx, conn, o, m.Up,
+				`INSERT INTO public.afs_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)`,
+				m.Version, m.Name, m.Checksum())
 			if err != nil {
 				return n, fmt.Errorf("apply %06d_%s: %w", m.Version, m.Name, err)
 			}
@@ -125,7 +165,9 @@ func Up(ctx context.Context, conn *pgx.Conn, migs []Migration) (int, error) {
 }
 
 // Down reverts the most recent `steps` applied migrations. For local development and tests.
-func Down(ctx context.Context, conn *pgx.Conn, migs []Migration, steps int) (int, error) {
+// It takes the same options as Up.
+func Down(ctx context.Context, conn *pgx.Conn, migs []Migration, steps int, opts ...Option) (int, error) {
+	o := resolve(opts)
 	return withLock(ctx, conn, func() (int, error) {
 		applied, err := appliedChecksums(ctx, conn)
 		if err != nil {
@@ -140,13 +182,8 @@ func Down(ctx context.Context, conn *pgx.Conn, migs []Migration, steps int) (int
 			if m.Down == "" {
 				return n, fmt.Errorf("%06d_%s has no down script", m.Version, m.Name)
 			}
-			err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-				if _, err := tx.Exec(ctx, m.Down); err != nil {
-					return err
-				}
-				_, err := tx.Exec(ctx, `DELETE FROM public.afs_schema_migrations WHERE version = $1`, m.Version)
-				return err
-			})
+			err := runInTx(ctx, conn, o, m.Down,
+				`DELETE FROM public.afs_schema_migrations WHERE version = $1`, m.Version)
 			if err != nil {
 				return n, fmt.Errorf("revert %06d_%s: %w", m.Version, m.Name, err)
 			}
