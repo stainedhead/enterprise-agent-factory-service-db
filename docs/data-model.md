@@ -16,6 +16,8 @@ erDiagram
     models ||--o{ model_prices : "priced by"
     agents ||--o{ agent_secret_bindings : ""
     agents ||--o{ agent_volume_snapshots : ""
+    agents ||--o{ agent_config_values : ""
+    teams ||--o{ namespace_config_values : ""
     storage_classes ||--o{ agents : ""
     secrets ||--o{ agent_secret_bindings : ""
     teams ||--o{ agent_identities : ""
@@ -47,6 +49,9 @@ erDiagram
 | `team_models` | Models enabled per team | `inference_profile_arn` written by the reconciler |
 | `secrets` | Secrets Manager **references** | Scope `agent_id` (NULL = team shared); `path` set by the database as `<prefix>/<namespace>/<agent-name or _shared>/<name>`, never by users; ARN must end in that path; origin `managed` only; team, scope, name, path and ARN immutable; **no value column** |
 | `agents` | Agent definitions (desired state) | One agent is one pod (no replica count); name immutable; image pinned by digest; model must be in `team_models` (composite FK); persistent volume settings: `storage_size_gib` (1–1000, grow only), `storage_class` (immutable, must be enabled), `storage_on_delete`, `snapshot_schedule`, `snapshot_retain_count` |
+| `namespace_config_values` | Non-secret configuration values for a team's namespace, set by team-admins | `UPPER_SNAKE` names, credential-like names rejected; cannot be deleted or renamed while an agent links to it |
+| `agent_config_values` | An agent's configuration values | `source` literal (own value) or namespace (link to the namespace value of the same name, which must exist); names cannot clash with the agent's secret env vars; replaces the old `agents.env` |
+| `agent_config_resolved` (view) | Effective value per agent entry and where it came from | `security_invoker`, so RLS applies |
 | `storage_classes` | Storage classes a service admin offers for agent volumes | EBS `gp3` or `io2`; seeded with `gp3` |
 | `agent_volume_snapshots` | EBS snapshot history per agent volume | Reconciler-written; `afs_app` may only insert `manual` requests for its own team; rows kept as history; referenced by export bundles |
 | `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team; an agent secret binds only to its own agent (trigger) |

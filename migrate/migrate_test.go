@@ -206,11 +206,13 @@ func TestConstraints(t *testing.T) {
 			t.Fatal("update of audit_log succeeded")
 		}
 	})
+	// Configuration values are non-secret by design (000005 rejects credential-like names), so their
+	// tables are exempt from the column-name check.
 	t.Run("no secret value column exists", func(t *testing.T) {
 		var n int
 		_ = conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'afs' AND column_name ~ '(value|password|plaintext|secret_string)'
-			  AND table_name NOT IN ('service_settings')`).Scan(&n)
+			  AND table_name NOT IN ('service_settings', 'namespace_config_values', 'agent_config_values', 'agent_config_resolved')`).Scan(&n)
 		if n != 0 {
 			t.Fatalf("%d columns look like they hold secret values", n)
 		}
@@ -541,4 +543,170 @@ func TestAgentPersistentStorage(t *testing.T) {
 			t.Fatalf("team B sees %d team A snapshots (err %v)", n, err)
 		}
 	})
+}
+
+func TestConfigurationValues(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+
+	exec := func(sql string, args ...any) error {
+		_, err := conn.Exec(ctx, sql, args...)
+		return err
+	}
+	if err := exec(`INSERT INTO afs.namespace_config_values (id, team_id, name, config_value) VALUES
+		('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4T60', $1, 'LOG_LEVEL', 'info'),
+		('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4T61', $1, 'GITHUB_ORG', 'acme-payments')`, teamA); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("literal and namespace values resolve", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.agent_config_values (id, team_id, agent_id, name, source, config_value) VALUES
+			('acv_01JD3Z5Y8K2M4N6P8Q0R2S4T60', $1, $2, 'LOG_LEVEL', 'literal', 'debug'),
+			('acv_01JD3Z5Y8K2M4N6P8Q0R2S4T61', $1, $2, 'GITHUB_ORG', 'namespace', NULL)`, teamA, agentA1); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := conn.Query(ctx, `SELECT name, source, resolved_value FROM afs.agent_config_resolved WHERE agent_id = $1 ORDER BY name`, agentA1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for rows.Next() {
+			var n, src, v string
+			if err := rows.Scan(&n, &src, &v); err != nil {
+				t.Fatal(err)
+			}
+			got[n] = src + "=" + v
+		}
+		if got["LOG_LEVEL"] != "literal=debug" || got["GITHUB_ORG"] != "namespace=acme-payments" {
+			t.Fatalf("resolved = %v", got)
+		}
+	})
+	t.Run("namespace link needs a namespace value of that name", func(t *testing.T) {
+		err := exec(`INSERT INTO afs.agent_config_values (id, team_id, agent_id, name, source) VALUES
+			('acv_01JD3Z5Y8K2M4N6P8Q0R2S4T62', $1, $2, 'MISSING', 'namespace')`, teamA, agentA1)
+		if sqlState(err) != "23503" {
+			t.Fatalf("want foreign_key_violation, got %v", err)
+		}
+	})
+	t.Run("namespace link ignores another team's values", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.namespace_config_values (id, team_id, name, config_value) VALUES
+			('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4T62', $1, 'REGION_HINT', 'us-east-1')`, teamB); err != nil {
+			t.Fatal(err)
+		}
+		err := exec(`INSERT INTO afs.agent_config_values (id, team_id, agent_id, name, source) VALUES
+			('acv_01JD3Z5Y8K2M4N6P8Q0R2S4T63', $1, $2, 'REGION_HINT', 'namespace')`, teamA, agentA1)
+		if sqlState(err) != "23503" {
+			t.Fatalf("want foreign_key_violation, got %v", err)
+		}
+	})
+	t.Run("literal needs a value and namespace link must not carry one", func(t *testing.T) {
+		for _, src := range []string{`'literal', NULL`, `'namespace', 'x'`} {
+			err := exec(`INSERT INTO afs.agent_config_values (id, team_id, agent_id, name, source, config_value) VALUES
+				('acv_01JD3Z5Y8K2M4N6P8Q0R2S4T64', $1, $2, 'LOG_LEVEL', `+src+`)`, teamA, agentA2)
+			if sqlState(err) != "23514" {
+				t.Errorf("%s: want check_violation, got %v", src, err)
+			}
+		}
+	})
+	t.Run("credential-like and malformed names rejected", func(t *testing.T) {
+		for _, name := range []string{"DB_PASSWORD", "GITHUB_TOKEN", "STRIPE_API_KEY", "lower_case", "1STARTS_WITH_DIGIT"} {
+			err := exec(`INSERT INTO afs.namespace_config_values (id, team_id, name, config_value) VALUES
+				('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4T63', $1, $2, 'v')`, teamA, name)
+			if sqlState(err) != "23514" {
+				t.Errorf("%s: want check_violation, got %v", name, err)
+			}
+		}
+	})
+	t.Run("config name cannot shadow a secret env var and vice versa", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.secrets (id, team_id, name, secrets_manager_arn, origin)
+			VALUES ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60', $1, 'gh', $2, 'managed')`, teamA, arnBase+"afs/afs-t-payments/_shared/gh-AbCdEf"); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target)
+			VALUES ($1, $2, 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60', 'env', 'GH_APP_PEM')`, teamA, agentA2); err != nil {
+			t.Fatal(err)
+		}
+		err := exec(`INSERT INTO afs.agent_config_values (id, team_id, agent_id, name, source, config_value) VALUES
+			('acv_01JD3Z5Y8K2M4N6P8Q0R2S4T65', $1, $2, 'GH_APP_PEM', 'literal', 'x')`, teamA, agentA2)
+		if sqlState(err) != "23505" {
+			t.Fatalf("config over secret: want unique_violation, got %v", err)
+		}
+		err = exec(`INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target)
+			VALUES ($1, $2, 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60', 'env', 'LOG_LEVEL')`, teamA, agentA1)
+		if sqlState(err) != "23505" {
+			t.Fatalf("secret over config: want unique_violation, got %v", err)
+		}
+	})
+	t.Run("linked namespace value cannot be deleted or renamed", func(t *testing.T) {
+		if err := exec(`DELETE FROM afs.namespace_config_values WHERE name = 'GITHUB_ORG'`); sqlState(err) != "23503" {
+			t.Fatalf("delete: want foreign_key_violation, got %v", err)
+		}
+		if err := exec(`UPDATE afs.namespace_config_values SET name = 'GH_ORG' WHERE name = 'GITHUB_ORG'`); sqlState(err) != "23503" {
+			t.Fatalf("rename: want foreign_key_violation, got %v", err)
+		}
+		if err := exec(`UPDATE afs.namespace_config_values SET config_value = 'acme-pay' WHERE name = 'GITHUB_ORG'`); err != nil {
+			t.Fatalf("value change should succeed: %v", err)
+		}
+	})
+	t.Run("agents.env is gone", func(t *testing.T) {
+		var n int
+		_ = conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = 'afs' AND table_name = 'agents' AND column_name = 'env'`).Scan(&n)
+		if n != 0 {
+			t.Fatal("agents.env still exists; configuration lives in agent_config_values")
+		}
+	})
+	t.Run("other team cannot see config", func(t *testing.T) {
+		var ns, ag int
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM afs.namespace_config_values WHERE team_id = $1`, teamA).Scan(&ns); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.agent_config_resolved`).Scan(&ag)
+		})
+		if err != nil || ns != 0 || ag != 0 {
+			t.Fatalf("team B sees ns=%d agent=%d (err %v)", ns, ag, err)
+		}
+	})
+	t.Run("deleting the team removes its configuration", func(t *testing.T) {
+		if err := exec(`DELETE FROM afs.agent_secret_bindings WHERE team_id = $1`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`DELETE FROM afs.agents WHERE team_id = $1`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`DELETE FROM afs.namespace_config_values WHERE team_id = $1`, teamA); err != nil {
+			t.Fatalf("namespace values unlinked once agents are gone: %v", err)
+		}
+	})
+}
+
+func TestAgentEnvBackfill(t *testing.T) {
+	conn := connect(t)
+	ctx := t.Context()
+	migs, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Up(ctx, conn, migs[:4]); err != nil {
+		t.Fatal(err)
+	}
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	if _, err := conn.Exec(ctx, `UPDATE afs.agents SET env = '{"LOG_LEVEL":"warn","FEATURE_X":"on"}' WHERE id = $1`, agentA1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Up(ctx, conn, migs); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM afs.agent_config_resolved
+		WHERE agent_id = $1 AND source = 'literal' AND ((name = 'LOG_LEVEL' AND resolved_value = 'warn') OR (name = 'FEATURE_X' AND resolved_value = 'on'))`, agentA1).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("backfilled %d of 2 env entries (err %v)", n, err)
+	}
 }
