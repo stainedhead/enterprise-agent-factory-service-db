@@ -15,6 +15,8 @@ erDiagram
     models ||--o{ team_models : ""
     models ||--o{ model_prices : "priced by"
     agents ||--o{ agent_secret_bindings : ""
+    agents ||--o{ agent_volume_snapshots : ""
+    storage_classes ||--o{ agents : ""
     secrets ||--o{ agent_secret_bindings : ""
     teams ||--o{ agent_identities : ""
     agents ||--o{ agent_identities : ""
@@ -44,7 +46,9 @@ erDiagram
 | `model_prices` | Effective-dated prices per million tokens | PK `(model_id, effective_from)` |
 | `team_models` | Models enabled per team | `inference_profile_arn` written by the reconciler |
 | `secrets` | Secrets Manager **references** | Scope `agent_id` (NULL = team shared); `path` set by the database as `<prefix>/<namespace>/<agent-name or _shared>/<name>`, never by users; ARN must end in that path; origin `managed` only; team, scope, name, path and ARN immutable; **no value column** |
-| `agents` | Agent definitions (desired state) | One agent is one pod (no replica count); name immutable; image pinned by digest; model must be in `team_models` (composite FK) |
+| `agents` | Agent definitions (desired state) | One agent is one pod (no replica count); name immutable; image pinned by digest; model must be in `team_models` (composite FK); persistent volume settings: `storage_size_gib` (1–1000, grow only), `storage_class` (immutable, must be enabled), `storage_on_delete`, `snapshot_schedule`, `snapshot_retain_count` |
+| `storage_classes` | Storage classes a service admin offers for agent volumes | EBS `gp3` or `io2`; seeded with `gp3` |
+| `agent_volume_snapshots` | EBS snapshot history per agent volume | Reconciler-written; `afs_app` may only insert `manual` requests for its own team; rows kept as history; referenced by export bundles |
 | `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team; an agent secret binds only to its own agent (trigger) |
 | `agent_identities` | ServiceAccount, IAM role, GitHub App, external | One per `(team, agent, kind)`; credentials as `secret_id` |
 | `team_egress_rules` | Egress allow-list (host, port) | Rendered into network policy |
