@@ -17,6 +17,8 @@ erDiagram
     agents ||--o{ agent_secret_bindings : ""
     agents ||--o{ agent_volume_snapshots : ""
     agents ||--o{ agent_config_values : ""
+    agents ||--o{ agent_role_links : ""
+    org_aws_accounts ||--o{ agent_role_links : ""
     teams ||--o{ namespace_config_values : ""
     storage_classes ||--o{ agents : ""
     secrets ||--o{ agent_secret_bindings : ""
@@ -41,17 +43,19 @@ erDiagram
 |---|---|---|
 | `service_settings` | Service-wide settings (key → JSON) | Service admins only |
 | `users` | People, provisioned just-in-time from OIDC | Unique `(oidc_issuer, oidc_subject)`, unique `lower(email)` |
-| `teams` | A software factory; one namespace | `slug` fixes `namespace = afs-t-<slug>`; `kind` persistent/ephemeral (ephemeral requires `expires_at`); `max_budget_usd` ceiling; `state` active/suspended/deleting/deleted |
+| `teams` | A software factory; one namespace | `slug` fixes `namespace = afs-t-<slug>`; `kind` persistent/ephemeral (ephemeral requires `expires_at`); `max_budget_usd` ceiling; `state` active/suspended/deleting/deleted; `allowed_aws_accounts` glob patterns over organization account ids and names (`*` = all) that bound cross-account role links, set by service admins |
 | `role_bindings` | Who holds which role where | `service_admin` ⇔ `team_id IS NULL`; subject is a user or an IdP group |
 | `api_keys` | Team-scoped keys for pipelines | SHA-256 only, shown once, `expires_at ≤ created_at + 90 days` |
 | `models` | Bedrock models in the catalog | `id` is the Bedrock model id |
 | `model_prices` | Effective-dated prices per million tokens | PK `(model_id, effective_from)` |
 | `team_models` | Models enabled per team | `inference_profile_arn` written by the reconciler |
 | `secrets` | Secrets Manager **references** | Scope `agent_id` (NULL = team shared); `path` set by the database as `<prefix>/<namespace>/<agent-name or _shared>/<name>`, never by users; ARN must end in that path; origin `managed` only; team, scope, name, path and ARN immutable; **no value column** |
-| `agents` | Agent definitions (desired state) | One agent is one pod (no replica count); name immutable; image pinned by digest; model must be in `team_models` (composite FK); persistent volume settings: `storage_size_gib` (1–1000, grow only), `storage_class` (immutable, must be enabled), `storage_on_delete`, `snapshot_schedule`, `snapshot_retain_count` |
+| `agents` | Agent definitions (desired state) | One agent is one pod (no replica count); `iam_identity` team_shared or dedicated (cannot go back to shared while it has cross-account links); name immutable; image pinned by digest; model must be in `team_models` (composite FK); persistent volume settings: `storage_size_gib` (1–1000, grow only), `storage_class` (immutable, must be enabled), `storage_on_delete`, `snapshot_schedule`, `snapshot_retain_count` |
 | `namespace_config_values` | Non-secret configuration values for a team's namespace, set by team-admins | `UPPER_SNAKE` names, credential-like names rejected; cannot be deleted or renamed while an agent links to it |
 | `agent_config_values` | An agent's configuration values | `source` literal (own value) or namespace (link to the namespace value of the same name, which must exist); names cannot clash with the agent's secret env vars; replaces the old `agents.env` |
 | `agent_config_resolved` (view) | Effective value per agent entry and where it came from | `security_invoker`, so RLS applies |
+| `org_aws_accounts` | Mirror of the AWS Organizations account list (reconciler-written) | Used to resolve account names and refuse suspended accounts |
+| `agent_role_links` | Roles in linked accounts an agent may assume | Agent must have `iam_identity = 'dedicated'`; account active and allowed by the team's filter (`afs.account_allowed`); role ARN must be in that account; AFS-generated unique `external_id`; `status` pending_trust/verified/failed/disabled written by the reconciler; role and external ID immutable |
 | `storage_classes` | Storage classes a service admin offers for agent volumes | EBS `gp3` or `io2`; seeded with `gp3` |
 | `agent_volume_snapshots` | EBS snapshot history per agent volume | Reconciler-written; `afs_app` may only insert `manual` requests for its own team; rows kept as history; referenced by export bundles |
 | `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team; an agent secret binds only to its own agent (trigger) |
