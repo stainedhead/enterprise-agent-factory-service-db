@@ -43,9 +43,9 @@ erDiagram
 | `models` | Bedrock models in the catalog | `id` is the Bedrock model id |
 | `model_prices` | Effective-dated prices per million tokens | PK `(model_id, effective_from)` |
 | `team_models` | Models enabled per team | `inference_profile_arn` written by the reconciler |
-| `secrets` | Secrets Manager **references** | ARN, origin managed/registered, rotation; **no value column** |
-| `agents` | Agent definitions (desired state) | Image pinned by digest; model must be in `team_models` (composite FK); replicas 0–50 |
-| `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team |
+| `secrets` | Secrets Manager **references** | Scope `agent_id` (NULL = team shared); `path` set by the database as `<prefix>/<namespace>/<agent-name or _shared>/<name>`, never by users; ARN must end in that path; origin `managed` only; team, scope, name, path and ARN immutable; **no value column** |
+| `agents` | Agent definitions (desired state) | One agent is one pod (no replica count); name immutable; image pinned by digest; model must be in `team_models` (composite FK) |
+| `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team; an agent secret binds only to its own agent (trigger) |
 | `agent_identities` | ServiceAccount, IAM role, GitHub App, external | One per `(team, agent, kind)`; credentials as `secret_id` |
 | `team_egress_rules` | Egress allow-list (host, port) | Rendered into network policy |
 | `budgets` | One budget per team | `amount_usd ≤ teams.max_budget_usd` (trigger); `period` monthly/lifetime; thresholds; `on_exhaust` block/notify |
@@ -67,6 +67,7 @@ erDiagram
 
 | Function | Used by | Purpose |
 |---|---|---|
+| `afs.secret_path(team_id, agent_id, name) → text` | api (before `CreateSecret`), secrets insert trigger | Managed Secrets Manager name from setting `secrets.path_prefix` (default `afs`), team namespace and agent name |
 | `afs.reserve_spend(budget, period_start, amount) → boolean` | gateway | Atomically reserve if `spent + reserved + amount ≤ limit` |
 | `afs.settle_spend(budget, period_start, reserved, actual)` | gateway | Release reservation, add actual cost |
 | `afs.ensure_usage_partition(month) → text` | reconciler | Create next month's `usage_events` partition |

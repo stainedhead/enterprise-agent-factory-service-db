@@ -8,7 +8,7 @@ API, plus the `afs-migrate` command.
 Part of [enterprise-agent-factory-service](https://github.com/stainedhead/enterprise-agent-factory-service).
 Data dictionary: [docs/data-model.md](docs/data-model.md).
 
-**Status:** schema v1 — migrations `000001_core_schema` and `000002_roles_and_rls`, with integration tests.
+**Status:** schema v1 — migrations `000001_core_schema`, `000002_roles_and_rls` and `000003_agent_singleton_secret_paths`, with integration tests.
 
 ## Use
 

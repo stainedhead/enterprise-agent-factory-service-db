@@ -258,8 +258,8 @@ func TestRowLevelSecurityIsolatesTeams(t *testing.T) {
 	seedTeams(t, conn)
 	_, err := conn.Exec(ctx, `
 		INSERT INTO afs.secrets (id, team_id, name, secrets_manager_arn, origin) VALUES
-		 ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T6V', $1, 'gh-token', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:/afs/t/a/gh-token-AbCdEf', 'managed'),
-		 ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T6W', $2, 'gh-token', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:/afs/t/b/gh-token-AbCdEf', 'managed')`,
+		 ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T6V', $1, 'gh-token', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-payments/_shared/gh-token-AbCdEf', 'managed'),
+		 ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T6W', $2, 'gh-token', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-search/_shared/gh-token-AbCdEf', 'managed')`,
 		teamA, teamB)
 	if err != nil {
 		t.Fatal(err)
@@ -305,4 +305,148 @@ func TestRowLevelSecurityIsolatesTeams(t *testing.T) {
 	if sqlState(err) != "42501" {
 		t.Fatalf("cross-team insert: want insufficient_privilege (RLS), got %v", err)
 	}
+}
+
+const (
+	agentA1 = "agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6V"
+	agentA2 = "agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6W"
+	arnBase = "arn:aws:secretsmanager:us-east-1:111122223333:secret:"
+)
+
+func seedAgents(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	_, err := conn.Exec(t.Context(), `
+		INSERT INTO afs.models (id, provider, display_name) VALUES ('claude-sonnet', 'Anthropic', 'Claude Sonnet');
+		INSERT INTO afs.team_models (team_id, model_id) VALUES ('`+teamA+`', 'claude-sonnet');
+		INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES
+		 ('`+agentA1+`', '`+teamA+`', 'reviewer-bot', 'omp-review', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet'),
+		 ('`+agentA2+`', '`+teamA+`', 'incident-scribe', 'hermes-ops', 'ghcr.io/x/hermes@sha256:def', 'claude-sonnet')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentsHaveNoReplicaCount(t *testing.T) {
+	conn := migrated(t)
+	var n int
+	if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'afs' AND table_name = 'agents' AND column_name = 'replicas'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("agents.replicas still present (n=%d, err=%v): one agent is one pod", n, err)
+	}
+}
+
+func TestSecretPathsAreManaged(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+
+	insert := func(id, agentID, name, arnPath, suppliedPath string) error {
+		var agent any
+		if agentID != "" {
+			agent = agentID
+		}
+		_, err := conn.Exec(ctx, `INSERT INTO afs.secrets (id, team_id, agent_id, name, secrets_manager_arn, origin, path)
+			VALUES ($1, $2, $3, $4, $5, 'managed', $6)`, id, teamA, agent, name, arnBase+arnPath+"-AbCdEf", suppliedPath)
+		return err
+	}
+	pathOf := func(id string) string {
+		var p string
+		if err := conn.QueryRow(ctx, `SELECT path FROM afs.secrets WHERE id = $1`, id).Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("secret_path computes the hierarchy", func(t *testing.T) {
+		var shared, agent string
+		if err := conn.QueryRow(ctx, `SELECT afs.secret_path($1, NULL, 'gh'), afs.secret_path($1, $2, 'gh')`, teamA, agentA1).Scan(&shared, &agent); err != nil {
+			t.Fatal(err)
+		}
+		if shared != "afs/afs-t-payments/_shared/gh" || agent != "afs/afs-t-payments/reviewer-bot/gh" {
+			t.Fatalf("paths = %q, %q", shared, agent)
+		}
+	})
+	t.Run("team-shared secret gets the managed path, ignoring a supplied one", func(t *testing.T) {
+		if err := insert("sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60", "", "github-bot-key", "afs/afs-t-payments/_shared/github-bot-key", "user/chosen/path"); err != nil {
+			t.Fatal(err)
+		}
+		if p := pathOf("sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60"); p != "afs/afs-t-payments/_shared/github-bot-key" {
+			t.Fatalf("path = %q", p)
+		}
+	})
+	t.Run("agent secret gets the agent path", func(t *testing.T) {
+		if err := insert("sec_01JD3Z5Y8K2M4N6P8Q0R2S4T61", agentA2, "pagerduty-token", "afs/afs-t-payments/incident-scribe/pagerduty-token", ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("same name allowed in another scope", func(t *testing.T) {
+		if err := insert("sec_01JD3Z5Y8K2M4N6P8Q0R2S4T62", agentA1, "pagerduty-token", "afs/afs-t-payments/reviewer-bot/pagerduty-token", ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("ARN outside the managed path rejected", func(t *testing.T) {
+		err := insert("sec_01JD3Z5Y8K2M4N6P8Q0R2S4T63", "", "snyk-token", "somewhere/else/snyk-token", "")
+		if sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+	})
+	t.Run("agent from another team rejected", func(t *testing.T) {
+		_, err := conn.Exec(ctx, `INSERT INTO afs.secrets (id, team_id, agent_id, name, secrets_manager_arn, origin)
+			VALUES ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T64', $1, $2, 'x', $3, 'managed')`, teamB, agentA1, arnBase+"afs/afs-t-search/reviewer-bot/x-AbCdEf")
+		if sqlState(err) != "23503" {
+			t.Fatalf("want foreign_key_violation, got %v", err)
+		}
+	})
+	t.Run("registered origin no longer allowed", func(t *testing.T) {
+		_, err := conn.Exec(ctx, `INSERT INTO afs.secrets (id, team_id, name, secrets_manager_arn, origin)
+			VALUES ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T65', $1, 'legacy', $2, 'registered')`, teamA, arnBase+"afs/afs-t-payments/_shared/legacy-AbCdEf")
+		if sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+	})
+	t.Run("path inputs are immutable", func(t *testing.T) {
+		for _, stmt := range []string{
+			`UPDATE afs.secrets SET name = 'renamed' WHERE id = 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60'`,
+			`UPDATE afs.secrets SET path = 'x/y/z' WHERE id = 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60'`,
+			`UPDATE afs.secrets SET agent_id = '` + agentA1 + `' WHERE id = 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60'`,
+			`UPDATE afs.agents SET name = 'renamed' WHERE id = '` + agentA1 + `'`,
+			`UPDATE afs.teams SET slug = 'renamed' WHERE id = '` + teamA + `'`,
+		} {
+			if _, err := conn.Exec(ctx, stmt); sqlState(err) != "55000" {
+				t.Errorf("%s: want object_not_in_prerequisite_state, got %v", stmt, err)
+			}
+		}
+		if _, err := conn.Exec(ctx, `UPDATE afs.secrets SET description = 'ok' WHERE id = 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60'`); err != nil {
+			t.Fatalf("metadata update should succeed: %v", err)
+		}
+	})
+	t.Run("agent secret binds only to its own agent", func(t *testing.T) {
+		bind := func(agentID, secretID, target string) error {
+			_, err := conn.Exec(ctx, `INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target)
+				VALUES ($1, $2, $3, 'env', $4)`, teamA, agentID, secretID, target)
+			return err
+		}
+		if err := bind(agentA2, "sec_01JD3Z5Y8K2M4N6P8Q0R2S4T61", "PAGERDUTY_TOKEN"); err != nil {
+			t.Fatalf("own agent: %v", err)
+		}
+		if err := bind(agentA1, "sec_01JD3Z5Y8K2M4N6P8Q0R2S4T61", "PAGERDUTY_TOKEN"); sqlState(err) != "23514" {
+			t.Fatalf("other agent: want check_violation, got %v", err)
+		}
+		if err := bind(agentA1, "sec_01JD3Z5Y8K2M4N6P8Q0R2S4T60", "GITHUB_APP_KEY"); err != nil {
+			t.Fatalf("team-shared secret to any agent: %v", err)
+		}
+	})
+	t.Run("path prefix setting is validated and used", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = '"Bad/Prefix"' WHERE key = 'secrets.path_prefix'`); sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+		if _, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = '"afs-dev"' WHERE key = 'secrets.path_prefix'`); err != nil {
+			t.Fatal(err)
+		}
+		var p string
+		if err := conn.QueryRow(ctx, `SELECT afs.secret_path($1, NULL, 'gh')`, teamA).Scan(&p); err != nil || p != "afs-dev/afs-t-payments/_shared/gh" {
+			t.Fatalf("path = %q, err %v", p, err)
+		}
+	})
 }
