@@ -208,13 +208,15 @@ func TestConstraints(t *testing.T) {
 			t.Fatal("update of audit_log succeeded")
 		}
 	})
-	// Configuration values are non-secret by design (000005 rejects credential-like names), so their
-	// tables are exempt from the column-name check.
+	// Configuration values and cost-allocation tags are non-secret by design (000005 and 000010 reject
+	// credential-like names), so their tables and views are exempt from the column-name check.
 	t.Run("no secret value column exists", func(t *testing.T) {
 		var n int
 		_ = conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'afs' AND column_name ~ '(value|password|plaintext|secret_string)'
-			  AND table_name NOT IN ('service_settings', 'namespace_config_values', 'agent_config_values', 'agent_config_resolved')`).Scan(&n)
+			  AND table_name NOT IN ('service_settings', 'namespace_config_values', 'agent_config_values', 'agent_config_resolved',
+			                         'service_tags', 'team_tags', 'team_effective_tags', 'agent_effective_tags',
+			                         'cost_daily_by_tag', 'agent_activity_daily_by_tag', 'external_traffic_daily_by_tag')`).Scan(&n)
 		if n != 0 {
 			t.Fatalf("%d columns look like they hold secret values", n)
 		}
@@ -1274,33 +1276,36 @@ func TestIdentityProvidersAndTeamGuardrails(t *testing.T) {
 	}
 	const okta = "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T60"
 	const entraA = "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T61"
-	addIdP := func(caller, id string, team any, kind, issuer string, def bool) error {
-		return asApp(caller, `INSERT INTO afs.identity_providers (id, team_id, kind, name, issuer_url, client_id, is_default)
-			VALUES ($1, $2, $3, $3, $4, 'afs-console', $5)`, id, team, kind, issuer, def)
+	addIdP := func(caller, id, kind, issuer string, def bool) error {
+		return asApp(caller, `INSERT INTO afs.identity_providers (id, kind, name, issuer_url, client_id, is_default)
+			VALUES ($1, $2, $2, $3, 'afs-console', $4)`, id, kind, issuer, def)
 	}
 
 	t.Run("service admins add providers; one default", func(t *testing.T) {
-		if err := addIdP("", okta, nil, "okta", "https://corp.okta.example", true); err != nil {
+		if err := addIdP("", okta, "okta", "https://corp.okta.example", true); err != nil {
 			t.Fatal(err)
 		}
-		if err := addIdP("", entraA, teamA, "entra_id", "https://login.microsoftonline.example/tenant/v2.0", false); err != nil {
+		if err := addIdP("", entraA, "entra_id", "https://login.microsoftonline.example/tenant/v2.0", false); err != nil {
 			t.Fatal(err)
 		}
-		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T62", nil, "entra_id", "https://login.microsoftonline.example/other/v2.0", true); sqlState(err) != "23505" {
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T62", "entra_id", "https://login.microsoftonline.example/other/v2.0", true); sqlState(err) != "23505" {
 			t.Errorf("second default: want 23505, got %v", err)
 		}
-		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T63", teamA, "okta", "https://team.okta.example", true); sqlState(err) != "23514" {
-			t.Errorf("team-level default: want 23514, got %v", err)
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T63", "okta", "https://corp.okta.example", false); sqlState(err) != "23505" {
+			t.Errorf("same issuer twice: want 23505, got %v", err)
 		}
-		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T64", nil, "google", "https://accounts.google.example", false); sqlState(err) != "23514" {
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T64", "google", "https://accounts.google.example", false); sqlState(err) != "23514" {
 			t.Errorf("unsupported kind: want 23514, got %v", err)
 		}
-		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T65", nil, "okta", "http://insecure.okta.example", false); sqlState(err) != "23514" {
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T65", "okta", "http://insecure.okta.example", false); sqlState(err) != "23514" {
 			t.Errorf("http issuer: want 23514, got %v", err)
 		}
+		if err := asApp("", `UPDATE afs.identity_providers SET enabled = false WHERE id = $1`, okta); sqlState(err) != "23514" {
+			t.Errorf("disable the default: want 23514, got %v", err)
+		}
 	})
-	t.Run("team callers cannot add or change providers", func(t *testing.T) {
-		if err := addIdP(teamA, "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T66", teamA, "okta", "https://rogue.okta.example", false); sqlState(err) != "42501" {
+	t.Run("team callers see every provider but cannot add or change one", func(t *testing.T) {
+		if err := addIdP(teamA, "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T66", "okta", "https://rogue.okta.example", false); sqlState(err) != "42501" {
 			t.Errorf("team insert: want 42501, got %v", err)
 		}
 		if err := asApp(teamA, `UPDATE afs.identity_providers SET client_id = 'x' WHERE id = $1`, entraA); err == nil || err.Error() != "no rows" {
@@ -1312,24 +1317,44 @@ func TestIdentityProvidersAndTeamGuardrails(t *testing.T) {
 				return err
 			}
 			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.identity_providers`).Scan(&n)
-		}); err != nil || n != 1 {
-			t.Errorf("team B sees %d providers, want 1 (service level only); err %v", n, err)
+		}); err != nil || n != 2 {
+			t.Errorf("team B sees %d providers, want 2; err %v", n, err)
 		}
 	})
-	t.Run("group bindings name a provider their team can use", func(t *testing.T) {
-		bind := func(id, team, idp string) error {
+	t.Run("a team chooses one of the service's enabled providers", func(t *testing.T) {
+		if err := asApp(teamA, `UPDATE afs.teams SET identity_provider_id = $2 WHERE id = $1`, teamA, entraA); err != nil {
+			t.Fatalf("team admin chooses Entra ID: %v", err)
+		}
+		if err := asApp("", `UPDATE afs.identity_providers SET enabled = false WHERE id = $1`, entraA); sqlState(err) != "55000" {
+			t.Errorf("disable a provider in use: want 55000, got %v", err)
+		}
+		if err := asApp(teamA, `UPDATE afs.teams SET identity_provider_id = NULL WHERE id = $1`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		if err := asApp("", `UPDATE afs.identity_providers SET enabled = false WHERE id = $1`, entraA); err != nil {
+			t.Fatalf("disable once unused: %v", err)
+		}
+		if err := asApp(teamA, `UPDATE afs.teams SET identity_provider_id = $2 WHERE id = $1`, teamA, entraA); sqlState(err) != "23514" {
+			t.Errorf("choose a disabled provider: want 23514, got %v", err)
+		}
+		if err := asApp(teamA, `UPDATE afs.teams SET identity_provider_id = 'idp_01JD3Z5Y8K2M4N6P8Q0R2S4T6Z' WHERE id = $1`, teamA); sqlState(err) != "23503" {
+			t.Errorf("unknown provider: want 23503, got %v", err)
+		}
+	})
+	t.Run("group bindings: service level names a provider, team bindings use the team's", func(t *testing.T) {
+		bind := func(id, role string, team any, idp any) error {
 			_, err := conn.Exec(ctx, `INSERT INTO afs.role_bindings (id, role, team_id, subject_type, group_name, identity_provider_id)
-				VALUES ($1, 'team_viewer', $2, 'group', 'grp-eng', $3)`, id, team, idp)
+				VALUES ($1, $2, $3, 'group', 'grp-eng', $4)`, id, role, team, idp)
 			return err
 		}
-		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T60", teamA, entraA); err != nil {
-			t.Fatalf("own team's provider: %v", err)
+		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T60", "service_admin", nil, okta); err != nil {
+			t.Fatalf("service-level binding naming a provider: %v", err)
 		}
-		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T61", teamB, entraA); sqlState(err) != "23503" {
-			t.Errorf("another team's provider: want 23503, got %v", err)
+		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T61", "team_viewer", teamA, okta); sqlState(err) != "23514" {
+			t.Errorf("team binding naming a provider: want 23514, got %v", err)
 		}
-		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T62", teamB, okta); err != nil {
-			t.Errorf("service-level provider: %v", err)
+		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T62", "team_viewer", teamA, nil); err != nil {
+			t.Errorf("team binding: %v", err)
 		}
 	})
 	t.Run("team admins set the account filter only when allowed", func(t *testing.T) {
@@ -1348,6 +1373,261 @@ func TestIdentityProvidersAndTeamGuardrails(t *testing.T) {
 		}
 		if err := asApp(teamA, `UPDATE afs.teams SET may_add_external_systems = true WHERE id = $1`, teamA); sqlState(err) != "42501" {
 			t.Fatalf("external systems right is still service-admin only: got %v", err)
+		}
+	})
+}
+
+func TestCostAllocationTags(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	as := func(team string, sql string, args ...any) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			setup := `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + team + `'`
+			if team == "" {
+				setup = `SET LOCAL ROLE afs_app; SET LOCAL afs.service_admin = 'on'`
+			}
+			if _, err := tx.Exec(ctx, setup); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, sql, args...)
+			return err
+		})
+	}
+	setTag := func(team, key, value string) error {
+		return as(team, `INSERT INTO afs.team_tags (team_id, key, value) VALUES ($1, $2, $3)
+			ON CONFLICT (team_id, key) DO UPDATE SET value = EXCLUDED.value`, team, key, value)
+	}
+
+	t.Run("service admins define fixed and required keys", func(t *testing.T) {
+		if err := as("", `INSERT INTO afs.service_tags (key, mode, value) VALUES ('environment', 'fixed', 'prod')`); err != nil {
+			t.Fatal(err)
+		}
+		if err := as("", `INSERT INTO afs.service_tags (key, mode, allowed_values, default_value)
+			VALUES ('business-unit', 'required', '{payments,platform,unassigned}', 'unassigned')`); err != nil {
+			t.Fatal(err)
+		}
+		if err := as(teamA, `INSERT INTO afs.service_tags (key, mode, value) VALUES ('owner', 'fixed', 'me')`); sqlState(err) != "42501" {
+			t.Errorf("team caller defining a service tag: want 42501, got %v", err)
+		}
+		for _, bad := range []string{
+			`INSERT INTO afs.service_tags (key, mode) VALUES ('afs-team-id', 'required')`,      // reserved prefix
+			`INSERT INTO afs.service_tags (key, mode) VALUES ('aws:createdBy', 'required')`,    // reserved prefix
+			`INSERT INTO afs.service_tags (key, mode) VALUES ('db-password', 'required')`,      // looks like a credential
+			`INSERT INTO afs.service_tags (key, mode) VALUES ('region', 'fixed')`,              // fixed needs a value
+			`INSERT INTO afs.service_tags (key, mode, value) VALUES ('tier', 'required', 'x')`, // required takes no value
+			`INSERT INTO afs.service_tags (key, mode, allowed_values, default_value) VALUES ('tier', 'required', '{a,b}', 'c')`,
+			`INSERT INTO afs.service_tags (key, mode, allowed_values) VALUES ('tier', 'required', '{"bad<value"}')`,
+		} {
+			if err := as("", bad); sqlState(err) != "23514" {
+				t.Errorf("%s: want 23514, got %v", bad, err)
+			}
+		}
+		if err := as("", `INSERT INTO afs.service_tags (key, mode, value) VALUES ('Environment', 'fixed', 'dev')`); sqlState(err) != "23505" {
+			t.Errorf("case-insensitive duplicate: want 23505, got %v", err)
+		}
+	})
+	t.Run("teams set required values and their own tags, never fixed ones", func(t *testing.T) {
+		if err := setTag(teamA, "business-unit", "payments"); err != nil {
+			t.Fatal(err)
+		}
+		if err := setTag(teamA, "business-unit", "marketing"); sqlState(err) != "23514" {
+			t.Errorf("value outside the allowed list: want 23514, got %v", err)
+		}
+		if err := setTag(teamA, "environment", "dev"); sqlState(err) != "42501" {
+			t.Errorf("override a fixed tag: want 42501, got %v", err)
+		}
+		if err := setTag(teamA, "Business-Unit", "payments"); sqlState(err) != "23514" {
+			t.Errorf("respelled service key: want 23514, got %v", err)
+		}
+		if err := setTag(teamA, "project", "checkout-v2"); err != nil {
+			t.Fatal(err)
+		}
+		if err := setTag(teamB, "project", "x"); err != nil {
+			t.Fatal(err)
+		}
+		if err := as(teamB, `UPDATE afs.team_tags SET value = 'stolen' WHERE team_id = $1`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		var v string
+		if err := conn.QueryRow(ctx, `SELECT value FROM afs.team_tags WHERE team_id = $1 AND key = 'project'`, teamA).Scan(&v); err != nil || v != "checkout-v2" {
+			t.Errorf("team B changed team A's tag: %q %v", v, err)
+		}
+		if err := as("", `UPDATE afs.service_tags SET mode = 'fixed', value = 'p', allowed_values = NULL, default_value = NULL WHERE key = 'business-unit'`); sqlState(err) != "55000" {
+			t.Errorf("make a key teams already set fixed: want 55000, got %v", err)
+		}
+	})
+	t.Run("system tags team and agent id are always there", func(t *testing.T) {
+		rows, err := conn.Query(ctx, `SELECT key, value, source FROM afs.agent_effective_tags WHERE agent_id = $1 ORDER BY key`, agentA1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for rows.Next() {
+			var k, v, s string
+			if err := rows.Scan(&k, &v, &s); err != nil {
+				t.Fatal(err)
+			}
+			got[k] = v + "/" + s
+		}
+		want := map[string]string{
+			"afs-team-id": teamA + "/system", "afs-agent-id": agentA1 + "/system",
+			"environment": "prod/service", "business-unit": "payments/team", "project": "checkout-v2/team",
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("agent tags\n got %v\nwant %v", got, want)
+		}
+		var src string
+		if err := conn.QueryRow(ctx, `SELECT source FROM afs.team_effective_tags WHERE team_id = $1 AND key = 'business-unit'`, teamB).Scan(&src); err != nil || src != "service_default" {
+			t.Errorf("team B business-unit source = %q, want service_default (%v)", src, err)
+		}
+	})
+	t.Run("new teams must give required tags without a default", func(t *testing.T) {
+		if err := as("", `INSERT INTO afs.service_tags (key, mode) VALUES ('cost-owner', 'required')`); err != nil {
+			t.Fatal(err)
+		}
+		var src string
+		if err := conn.QueryRow(ctx, `SELECT source FROM afs.team_effective_tags WHERE team_id = $1 AND key = 'cost-owner'`, teamB).Scan(&src); err != nil || src != "missing" {
+			t.Errorf("existing team: source = %q, want missing (%v)", src, err)
+		}
+		newTeam := `INSERT INTO afs.teams (id, slug, display_name, cost_center, owner_email)
+			VALUES ('team_01JD3Z5Y8K2M4N6P8Q0R2S4T7A', 'fraud', 'Fraud', 'CC300', 'f@example.com')`
+		if err := as("", newTeam); sqlState(err) != "23514" {
+			t.Errorf("team without required tag: want 23514, got %v", err)
+		}
+		if err := as("", newTeam+`; INSERT INTO afs.team_tags (team_id, key, value)
+			VALUES ('team_01JD3Z5Y8K2M4N6P8Q0R2S4T7A', 'cost-owner', 'risk')`); err != nil {
+			t.Errorf("team with required tag in the same transaction: %v", err)
+		}
+		if err := as("", `DELETE FROM afs.team_tags WHERE team_id = 'team_01JD3Z5Y8K2M4N6P8Q0R2S4T7A' AND key = 'cost-owner'`); sqlState(err) != "23514" {
+			t.Errorf("remove a required tag: want 23514, got %v", err)
+		}
+	})
+	t.Run("cost, activity and traffic roll up by tag", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `
+			INSERT INTO afs.cost_daily (team_id, day, source, agent_id, model_id, input_tokens, output_tokens, cost_usd, calls) VALUES
+			 ('`+teamA+`', '2026-11-20', 'gateway', '`+agentA1+`', 'claude-sonnet', 1000, 100, 1.50, 3),
+			 ('`+teamB+`', '2026-11-20', 'gateway', NULL, 'claude-sonnet', 500, 50, 0.50, 1)`); err != nil {
+			t.Fatal(err)
+		}
+		var cost float64
+		var teams int
+		if err := conn.QueryRow(ctx, `SELECT sum(cost_usd)::float8, sum(teams)::int FROM afs.cost_daily_by_tag
+			WHERE tag_key = 'environment' AND tag_value = 'prod'`).Scan(&cost, &teams); err != nil || cost != 2.0 || teams != 2 {
+			t.Errorf("environment=prod: cost %v teams %d, want 2.0 and 2 (%v)", cost, teams, err)
+		}
+		if err := conn.QueryRow(ctx, `SELECT sum(cost_usd)::float8 FROM afs.cost_daily_by_tag
+			WHERE tag_key = 'cost-owner' AND tag_value IS NULL`).Scan(&cost); err != nil || cost != 2.0 {
+			t.Errorf("untagged cost-owner: %v, want 2.0 (%v)", cost, err)
+		}
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM afs.cost_daily_by_tag WHERE tag_key LIKE 'afs-%'`).Scan(&n); err != nil || n != 0 {
+			t.Errorf("system keys in rollup: %d (%v)", n, err)
+		}
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT sum(cost_usd)::float8 FROM afs.cost_daily_by_tag WHERE tag_key = 'environment'`).Scan(&cost)
+		}); err != nil || cost != 0.5 {
+			t.Errorf("team B sees %v in its rollup, want only its own 0.5 (%v)", cost, err)
+		}
+		for _, v := range []string{"afs.agent_activity_daily_by_tag", "afs.external_traffic_daily_by_tag"} {
+			if _, err := conn.Exec(ctx, `SELECT * FROM `+v+` LIMIT 1`); err != nil {
+				t.Errorf("%s: %v", v, err)
+			}
+		}
+	})
+	t.Run("the gateway reads an agent's tags", func(t *testing.T) {
+		var n int
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_gateway`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.agent_effective_tags WHERE agent_id = $1`, agentA1).Scan(&n)
+		}); err != nil || n != 5 {
+			t.Errorf("gateway sees %d tags, want 5 (cost-owner has no value yet) (%v)", n, err)
+		}
+	})
+}
+
+func TestModelPriceProposals(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	as := func(role, admin, sql string, args ...any) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+role+`; SET LOCAL afs.actor = 'usr_admin'; SET LOCAL afs.service_admin = '`+admin+`'`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, sql, args...)
+			return err
+		})
+	}
+	const p1 = "mpp_01JD3Z5Y8K2M4N6P8Q0R2S4T60"
+	const p2 = "mpp_01JD3Z5Y8K2M4N6P8Q0R2S4T61"
+	propose := func(id, from string, in float64) error {
+		return as("afs_billing", "off", `INSERT INTO afs.model_price_proposals (id, model_id, effective_from, input_usd_per_mtok, output_usd_per_mtok)
+			VALUES ($1, 'claude-sonnet', $2, $3, 15)`, id, from, in)
+	}
+
+	t.Run("billing proposes one price per model at a time", func(t *testing.T) {
+		if err := propose(p1, "2026-12-01 00:00:00+00", 3); err != nil {
+			t.Fatal(err)
+		}
+		if err := propose(p2, "2026-12-15 00:00:00+00", 2.5); sqlState(err) != "23505" {
+			t.Errorf("second pending: want 23505, got %v", err)
+		}
+		if err := as("afs_app", "on", `INSERT INTO afs.model_price_proposals (id, model_id, effective_from, input_usd_per_mtok, output_usd_per_mtok)
+			VALUES ($1, 'claude-sonnet', now(), 1, 1)`, p2); sqlState(err) != "42501" {
+			t.Errorf("api proposing: want 42501, got %v", err)
+		}
+	})
+	t.Run("only service admins decide", func(t *testing.T) {
+		if err := as("afs_app", "off", `UPDATE afs.model_price_proposals SET status = 'approved' WHERE id = $1`, p1); sqlState(err) != "42501" {
+			t.Errorf("team caller approving: want 42501, got %v", err)
+		}
+		if err := as("afs_billing", "off", `UPDATE afs.model_price_proposals SET status = 'approved' WHERE id = $1`, p1); sqlState(err) != "42501" {
+			t.Errorf("billing approving: want 42501, got %v", err)
+		}
+		if err := as("afs_app", "on", `UPDATE afs.model_price_proposals SET status = 'superseded' WHERE id = $1`, p1); sqlState(err) != "42501" {
+			t.Errorf("api superseding: want 42501, got %v", err)
+		}
+		if err := as("afs_app", "on", `UPDATE afs.model_price_proposals SET status = 'approved' WHERE id = $1`, p1); err != nil {
+			t.Fatal(err)
+		}
+		var by string
+		var in float64
+		var src string
+		if err := conn.QueryRow(ctx, `SELECT p.decided_by, m.input_usd_per_mtok::float8, m.source
+			FROM afs.model_price_proposals p JOIN afs.model_prices m ON m.model_id = p.model_id AND m.effective_from = p.effective_from
+			WHERE p.id = $1`, p1).Scan(&by, &in, &src); err != nil || by != "usr_admin" || in != 3 || src != "aws_price_list" {
+			t.Errorf("approval wrote price %v from %q by %q (%v)", in, src, by, err)
+		}
+		if err := as("afs_app", "on", `UPDATE afs.model_price_proposals SET status = 'rejected' WHERE id = $1`, p1); sqlState(err) != "55000" {
+			t.Errorf("decide twice: want 55000, got %v", err)
+		}
+	})
+	t.Run("a late approval takes effect from now, not the past", func(t *testing.T) {
+		if err := propose(p2, "2020-01-01 00:00:00+00", 2); err != nil {
+			t.Fatal(err)
+		}
+		if err := as("afs_app", "on", `UPDATE afs.model_price_proposals SET status = 'approved' WHERE id = $1`, p2); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM afs.model_prices WHERE model_id = 'claude-sonnet' AND effective_from < '2026-01-01'`).Scan(&n); err != nil || n != 0 {
+			t.Errorf("backdated prices: %d (%v)", n, err)
+		}
+	})
+	t.Run("pricing settings are typed", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = '"often"' WHERE key = 'pricing.price_list_sync'`); sqlState(err) != "23514" {
+			t.Errorf("non-boolean sync: want 23514, got %v", err)
+		}
+		if _, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = '250' WHERE key = 'billing.variance_alert_pct'`); sqlState(err) != "23514" {
+			t.Errorf("variance over 100: want 23514, got %v", err)
 		}
 	})
 }
