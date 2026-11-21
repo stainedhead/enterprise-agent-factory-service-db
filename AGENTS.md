@@ -16,8 +16,9 @@ root (PRD and `docs/solution-design.md`). Its only code consumer is
 [enterprise-agent-factory-service-restapi](https://github.com/stainedhead/enterprise-agent-factory-service-restapi),
 which imports this module at a released tag and connects as the roles defined here.
 
-Status: schema v1 (migrations 000001–000014) with integration tests for up/down/up, checksums,
-constraints, spend reservation and row-level security.
+Status: feature complete (migrations 000001–000015) with integration tests for up/down/up, checksums,
+constraints, spend reservation, row-level security and the change feed; every PRD criterion provable here
+names its test.
 
 ## Toolchain
 
@@ -36,7 +37,8 @@ bootstrap/embed.go        exposes RolesSQL
 migrations/NNNNNN_name.up.sql / .down.sql
 migrations/embed.go       embeds all migrations (migrations.FS)
 migrate/                  Load, Up, Down, Version; advisory lock; checksum guard
-migrate/migrate_test.go   integration tests (need AFS_TEST_DATABASE_URL)
+migrate/*_test.go         integration tests (need AFS_TEST_DATABASE_URL); feature_complete_test.go holds
+                          the catalog-driven isolation and change-feed tests and their shared fixture
 cmd/afs-migrate/          CLI: up | down N | version | bootstrap-roles
 docs/data-model.md        data dictionary: every table, its purpose and its access
 ```
@@ -80,6 +82,8 @@ that makes it pass.
 - Every constraint gets a test that proves the rejected case.
 - Every RLS policy gets a test that proves another team's rows are invisible and unwritable.
 - `migrate` keeps ≥ 90% coverage.
+- A new team-owned table must get rows in `seedOtherTeams` (`migrate/feature_complete_test.go`), or
+  `TestCrossTeamWritesChangeNothing` fails.
 
 ## Quality gate
 

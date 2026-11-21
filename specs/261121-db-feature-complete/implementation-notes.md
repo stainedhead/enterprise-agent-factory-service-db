@@ -36,6 +36,10 @@ Purpose: decisions, edge cases and deviations, recorded as they happen. Update a
   the PRD now says so instead of adding a redundant guard.
 - **TD-11 Local server is PostgreSQL 16.** The integration tests ran against 16 here; nothing in 000015 or
   the tests needs 17, and CI runs them on `postgres:17`.
+- **TD-12 Step 4 docs.** `docs/product-details.md` was not created: the product details of this repository
+  are the data dictionary (`docs/data-model.md`) and the PRD, and AGENTS.md forbids duplicating them.
+  `user-docs/` got getting-started, configuration and operations guides (operator material only, per the
+  user-docs rule), linked from README.md.
 - **TD-4 Spec directory name.** `261121-db-feature-complete` (shorter than the PRD-derived
   `enterprise-agent-factory-service-db`), as requested; the dashboard keeps the PRD-derived feature name.
 
