@@ -23,3 +23,6 @@ None.
 ## Recent activity
 - 2026-11-21 spec created.
 - 2026-11-21 spec reviewed (implementation-ready); tasks T1–T9 defined.
+- 2026-11-21 T1 done: lock timeout, runner error paths (coverage 96.2%).
+- 2026-11-21 T2–T7 done: pending proofs written; four gaps fixed in 000015.
+- 2026-11-21 T8 done: PRD Proven-by lines name the real tests; no repo-owned pending left.

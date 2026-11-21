@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft for review, feature-complete scope, schema 000014 (2026-11-21) |
+| **Status** | Feature complete, schema 000015 (2026-11-21): every acceptance criterion provable in this repository has a named, passing test |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
 | **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-26) |
 | **Provides** | [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
@@ -43,9 +43,10 @@ copies, KMS keys and IAM database authentication (Terraform lives in `-restapi/d
 ## 4. Requirements owned
 
 Each row traces a product requirement to the objects that implement it. Status: ✓ in schema at
-`000014`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
+`000015`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
 DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45); DB-35 and DB-36 close the two gaps left
-open at 000013 (root D54, D49); DB-37 adds owner resolution for work orders (root D38).
+open at 000013 (root D54, D49); DB-37 adds owner resolution for work orders (root D38); DB-38 closes the
+gaps the 000015 proofs revealed.
 
 | DB req | Product req | Objects | Status |
 |---|---|---|---|
@@ -86,15 +87,16 @@ open at 000013 (root D54, D49); DB-37 adds owner resolution for work orders (roo
 | DB-35 Agent template catalog | AGT-2, AGT-11, D54 | `agent_templates` (allowed and current image digests, `enabled`; service-admin writes, `agent_templates_notify`), `agents.template_id` and `agent_pools.template_id`, `afs.image_digests_ok`, `afs.template_use_guard` (`agents_template_guard`, `agent_pools_template_guard`); the free-text `template` columns stay | ✓ |
 | DB-36 Export and import transport | CFG-5, D49 | `export_bundles`: nullable `s3_uri` and `sha256`, `download_url`, `download_expires_at`, `size_bytes`, `export_bundles_succeeded_check`, `export_bundles_export_succeeded_check`, reconciler column grants | ✓ |
 | DB-37 Repository owner resolution | WO-1, D38 | `afs.resolve_repo_owners(host, repo)` (000014, `SECURITY DEFINER`, executable by `afs_app` and `afs_reconciler` only), reading namespace config value `AFS_OWNED_REPOS` | ✓ |
+| DB-38 Gaps closed by proof | SEC-1, BUD-6, TEAM-7, ACC-4 | 000015: `notification_channels_service_no_secret`, `teams_due_for_teardown` lists only teams due, `cost_reconciliation_status` (derived `status`), `api_key_created_at_guard`; `migrate` sets `lock_timeout` per migration (`DefaultLockTimeout`, `WithLockTimeout`, `afs-migrate --lock-timeout`) | ✓ |
 
 ## 5. User stories and acceptance criteria
 
-Stories are implemented by migrations 000001 to 000014. Each story ends with **Proven by:**, naming the
-integration test (`migrate/migrate_test.go`, `migrate/hardening_test.go` for 000013, or
-`migrate/templates_exports_test.go` for 000014) that proves each
-criterion, written `TestName/subtest`. Where a criterion cannot be proven in this repository it names the
-milestone and owner; where a test is still to be written it says **pending** and is a task in the
-release spec. All named tests pass against `postgres:17`.
+Stories are implemented by migrations 000001 to 000015. Each story ends with **Proven by:**, naming the
+integration test (`migrate/migrate_test.go`, `migrate/hardening_test.go` for 000013,
+`migrate/templates_exports_test.go` for 000014, `migrate/feature_complete_test.go` for the proofs and
+fixes of 000015, `migrate/runner_test.go` for the runner) that proves each criterion, written
+`TestName/subtest`. Where a criterion cannot be proven in this repository it names the milestone and
+owner. No criterion is **pending**. All named tests pass against `postgres:17`.
 
 SQLSTATEs map to API errors through database contract §6: `42501` → `AccessDenied`, `23514` →
 `ValidationError`, `23503` → `ValidationError` on insert or update and `Conflict` on delete, `23505` and
@@ -120,11 +122,11 @@ Proven by: `TestRowLevelSecurityIsolatesTeams` (team A sees 1 of 2 teams and sec
 an `afs_app` policy on every RLS table); per-feature isolation subtests (`TestConfigurationValues/other
 team cannot see config`, `TestCrossAccountRoleLinks/other team cannot see links`,
 `TestAgentActivityReporting/another team cannot see activity or write it`,
-`TestExternalTrafficReporting/another team cannot see traffic`). Cross-team UPDATE and DELETE by id:
-proven for work orders and settings (`TestSwarmsEphemeralTeamsAndWorkOrders/teams only read work orders
-and report progress on their own`, `TestHardeningSpendPeriodsAndChangeFeed/the service catalog, settings
-and enabled models are service admin writes`); a table-driven test over every RLS table from
-`pg_policies` is **pending**.
+`TestExternalTrafficReporting/another team cannot see traffic`). Cross-team UPDATE and DELETE:
+`TestCrossTeamWritesChangeNothing` (one subtest per RLS table with a team column, found from the
+catalog: a team-A caller's update and delete of every other team's and every service-level row change
+zero rows, and on team-scoped tables it sees none; a new team table without fixture rows fails;
+`idempotency_keys` is scoped by principal and proven in DB-US-12).
 
 **DB-US-2 · Guardrails only service admins change.** *(refines US-1, US-7)* As a service admin, I want
 budget ceilings, quotas, the temporary ceiling override, `may_*` rights and (when the team does not
@@ -157,8 +159,9 @@ want an atomic reserve and settle, so that concurrent calls cannot reserve past 
   most 5 successes.
 - `reserve_spend` p99 under 5 ms at 500 calls per second on the reference instance `db.r7g.large`.
 
-Proven by: `TestSpendReservation` (sequential case). Concurrent bound and p99: gateway load test in
-`-restapi`, milestone M3.
+Proven by: `TestSpendReservation` (sequential case); `TestConcurrentReservationsNeverOverbook` (50
+connections as `afs_gateway`: exactly 5 granted, spent plus reserved equals the limit). p99: gateway
+load test in `-restapi`, milestone M3.
 
 **DB-US-4 · Secrets cannot leak through the schema.** *(refines US-6)* As security, I want no column
 able to hold a secret value.
@@ -180,8 +183,8 @@ managed path rejected`; `TestSwarmsEphemeralTeamsAndWorkOrders/pool secrets have
 only to their pool`; `TestConfigurationValues/credential-like and malformed names rejected`;
 `TestCostAllocationTags/service admins define fixed and required keys`;
 `TestReportSchedulesIsolationTierAndIdempotencyKeys/idempotency keys belong to their caller and expire`
-(the `secretKey` case). Reconciler column grant: **pending** (denied `SELECT response_body` as
-`afs_reconciler`).
+(the `secretKey` case); `TestReconcilerCannotReadIdempotentResponses` (reconciler `SELECT
+response_body` and request columns `42501`; `principal`, `key`, `expires_at` readable).
 
 **DB-US-5 · Required tags at team creation.** *(refines US-12)* As a service admin, I want a team to be
 impossible to create without required tags.
@@ -192,8 +195,8 @@ impossible to create without required tags.
   `afs-agent-id`; neither can be set or overridden through `team_tags`.
 
 Proven by: `TestCostAllocationTags/new teams must give required tags without a default`,
-`TestCostAllocationTags/system tags team and agent id are always there`. That the message names the key
-is **pending** (assert the error text).
+`TestCostAllocationTags/system tags team and agent id are always there`; `TestPendingGuards/a missing
+required tag is named in the error`.
 
 **DB-US-6 · Price decisions with a trail.** *(refines US-10)* As a service admin, I want only service
 admins to approve prices, and approvals never to backdate a price.
@@ -216,8 +219,13 @@ once, in order, under a lock, and to refuse tampering.
 - Each migration from 000003 on states its lock impact in its header; 000001 and 000002 create the
   schema from nothing and are exempt. None rewrites a large table in one step.
 
+- Each migration transaction sets `lock_timeout` (default 10 s, `WithLockTimeout`, `afs-migrate
+  --lock-timeout`), so a DDL blocked by live traffic fails with `55P03` instead of queueing it.
+
 Proven by: `TestConcurrentUpAppliesOnce`; `TestChecksumMismatchIsRefused`; `TestUpDownUp`;
-`TestLoadRejectsGaps` (order). Lock headers: code review (definition of done, §8).
+`TestLoadRejectsGaps` and `TestLoadErrors` (order, names, missing up script); `TestUpAndDownErrors`;
+`TestMigrationsStateLockImpact` (lock impact in every header from 000003);
+`TestLockTimeoutStopsBlockedMigration`, `TestLockTimeoutIsSetPerMigration`.
 
 **DB-US-8 · Reports from views.** *(refines US-11, US-12)* As an `-restapi` developer, I want daily and
 current views that answer the report API without application-side aggregation.
@@ -273,11 +281,13 @@ admin, I want an ephemeral team to always have an expiry, a teardown rule and a 
 - Without any of them, or with expiry beyond `teams.ephemeral_max_days`, the commit fails (`23514`);
   removing the lifetime budget fails (`23514`); changing `kind` fails (`23514`, `ValidationError` as
   root US-15 requires).
-- `teams_due_for_teardown` lists a team when its rule fires (expired, cap reached, work order complete).
+- `teams_due_for_teardown` lists a team when its rule fires (expired, cap reached, work order complete),
+  and only then.
 
 Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/an ephemeral team needs a blocking lifetime budget and
-a bounded expiry`, `TestSwarmsEphemeralTeamsAndWorkOrders/teams due for teardown` (`work_complete`).
-`expired` and `cap_reached` reasons: **pending**.
+a bounded expiry`, `TestSwarmsEphemeralTeamsAndWorkOrders/teams due for teardown` (`work_complete`);
+`TestPendingGuards/teams due for teardown: expired, cap reached, and nothing else` (a team whose rule has
+not fired is not listed, 000015).
 
 **DB-US-14 · Pools only where they belong.** *(refines US-17, AGT-8)* As a team-admin, I want pools that
 behave like agents without breaking the one-agent-one-pod rule.
@@ -285,14 +295,16 @@ behave like agents without breaking the one-agent-one-pod rule.
   conflict (`23505`); a pool cannot be renamed (`55000`).
 - Pool secrets use the managed path `<prefix>/<namespace>/<pool>/<name>`; a pool role link outside the
   team's allowed accounts is refused (`23514`).
-- Handoffs only join pools of the same team and never a pool to itself (`23514`); workers 0 to 200;
+- Handoffs only join pools of the same team (`23503`, composite foreign keys) and never a pool to itself
+  (`23514`); workers 0 to 200;
   usage, activity and traffic rows may carry `pool_id` and `worker_pod`, and their daily views group by
   pool.
 
 Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/pools live only in swarms and share the agent name
 space`, `…/pool secrets have their own path and bind only to their pool`, `…/a pool uses one shared role
-name in allowed accounts`, `…/usage and activity are attributed to the pool and the worker pod`. Cross-team
-handoff and grouping by pool in the daily views: **pending**.
+name in allowed accounts`, `…/usage and activity are attributed to the pool and the worker pod`;
+`TestPendingGuards/handoffs only join pools of the same team`, `TestPendingGuards/daily activity and
+traffic group by pool`.
 
 **DB-US-15 · Work orders visible to the right people.** *(refines US-16, WO-1 to WO-6)* As a security
 operator, I want to manage all work orders, and owning teams to see theirs read-only.
@@ -313,8 +325,9 @@ operator, I want to manage all work orders, and owning teams to see theirs read-
 
 Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/work orders are visible to security, the assigned team
 and owning teams only`, `…/teams only read work orders and report progress on their own`, `…/work orders
-track repositories and notify owners once`; `TestWorkOrderOutsideContactChannel`. `merged` without a PR
-link and an `sla_warning_hours` override: **pending**.
+track repositories and notify owners once`; `TestWorkOrderOutsideContactChannel`;
+`TestPendingGuards/a merged repository needs a PR link`, `TestPendingGuards/the SLA warning window
+follows its setting`.
 
 **DB-US-16 · Who may grant cluster and node access.** *(refines US-18; ACC-5, TEAM-6)* As a service
 admin, I want viewer kubectl and the isolation tier to be mine to set.
@@ -368,8 +381,10 @@ desired-state change as soon as it commits.
 - `users` and `service_settings` carry no revision trigger and send nothing. The 30-second poll on
   `generation <> observed_generation` and the 10-minute resync belong to the reconciler.
 
-Proven by: `TestHardeningSpendPeriodsAndChangeFeed/desired-state changes are announced` (`teams`). The
-other tables get the trigger from the same catalog query in 000013; a table-driven test is **pending**.
+Proven by: `TestHardeningSpendPeriodsAndChangeFeed/desired-state changes are announced` (`teams`);
+`TestEveryRevisionTableAnnouncesChanges` (one subtest per table with a revision trigger, found from the
+catalog: a row-level notify trigger for insert, update and delete, and an update of one row sends exactly
+`<table>:<team_id>:<id>`).
 
 **DB-US-20 · Retention.** *(refines US-11; D36)* As an operator, I want old fact partitions removed on a
 schedule without owner rights.
@@ -383,7 +398,8 @@ schedule without owner rights.
 - `audit_log` is never deleted (append-only trigger); see OQ-4.
 
 Proven by: `TestHardeningSpendPeriodsAndChangeFeed/old monthly partitions are dropped by the reconciler`
-(`usage_events`). The same query covers activity and traffic; their cases are **pending**.
+(`usage_events`); `TestRetentionDropsEveryFactTable` (all three tables: the month 14 months back is
+dropped; 13 months back, the current month and the default partitions stay).
 
 **DB-US-21 · Temporary ceiling raise and notify-only budgets.** *(refines US-1, US-9, US-24; BUD-1, BUD-10,
 G3; D5, D33, D34)* As a service admin, I want to raise a ceiling for a limited time and, for a persistent team
@@ -405,7 +421,8 @@ agent that cannot be scaled sideways or run an unpinned image.
 - `agents` has no replica column.
 - An image without `@sha256:` is refused (`23514`).
 
-Proven by: `TestAgentsHaveNoReplicaCount`. Unpinned image refused: **pending**.
+Proven by: `TestAgentsHaveNoReplicaCount`; `TestPendingGuards/an unpinned image is refused` (insert and
+update).
 
 **DB-US-23 · Agent identities and cross-account links.** *(refines US-7; DB-5)* As a team-admin, I want
 an agent's role links limited to the accounts my team may use.
@@ -434,23 +451,26 @@ Proven by: `TestConfigurationValues` (all subtests).
 
 **DB-US-26 · Billed cost against the estimate.** *(refines US-10, US-11; DB-10)* As finance, I want the
 gateway's estimate compared with the bill.
-- `cost_reconciliations.variance_pct` is generated and `over_threshold` is true beyond setting
-  `billing.variance_alert_pct` (default 5, 0 to 100).
+- `cost_reconciliations.variance_pct` is generated, and `status` is derived on every write (000015):
+  `over_threshold` when the estimate is more than setting `billing.variance_alert_pct` (default 5, 0 to
+  100) percent above or below the bill, `missing_billing` when nothing was billed for a metered day, else
+  `ok`.
 
-Proven by: `TestModelPriceProposals/pricing settings are typed` (setting bounds). `over_threshold`
-itself: **pending**.
+Proven by: `TestModelPriceProposals/pricing settings are typed` (setting bounds); `TestPendingGuards/billed
+cost beyond the variance setting is over threshold`.
 
 **DB-US-27 · People, keys and sign-in providers.** *(refines US-2; DB-11)* As a team-admin, I want
 bindings, keys and providers that cannot be misused.
 - A team-scoped `security_operator` binding is refused (`23514`); a service-level key may only have the
-  `security_operator` role (`23514`); keys expire within 90 days of creation.
+  `security_operator` role (`23514`); keys expire within 90 days of creation (`23514`), and the creation
+  time is the database's own (`now()` on insert; changing it is `55000`, 000015).
 - One default provider, unique HTTPS issuers, supported kinds only; the default cannot be disabled; a
   provider in use cannot be disabled (`55000`); team callers read every provider and cannot add one
   (`42501`); team bindings never name a provider (`23514`).
 
 Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/security operators are a service-level role`;
-`TestIdentityProvidersAndTeamGuardrails` (provider subtests); DB-US-17 for binding writes. Key expiry
-beyond 90 days: **pending**.
+`TestIdentityProvidersAndTeamGuardrails` (provider subtests); DB-US-17 for binding writes;
+`TestPendingGuards/API keys expire within 90 days of their real creation`.
 
 **DB-US-28 · History and audit.** *(refines US-13, US-14, US-20; DB-12)* As an auditor, I want every change
 versioned and every audit row permanent.
@@ -458,8 +478,8 @@ versioned and every audit row permanent.
 - `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`; audit rows can name a pool and worker pod.
 
 Proven by: `TestConstraints/version bumps on update`, `TestConstraints/revisions recorded`,
-`TestConstraints/audit log is append-only` (UPDATE and DELETE). `TRUNCATE` and pool attribution in audit:
-**pending**.
+`TestConstraints/audit log is append-only` (UPDATE and DELETE); `TestPendingGuards/audit rows are
+permanent and can name a pool and worker pod` (`TRUNCATE` refused; pool rows hidden from other teams).
 
 **DB-US-29 · Export bundle checksum.** *(refines US-13; DB-13)* As an operator, I want each export recorded
 with a verifiable checksum.
@@ -540,11 +560,16 @@ references only, and to be invisible to other teams.
   `notification_channels`, then it sees only team A's rows (the standard `app_team_scope` policy); inserting a row for team B
   is `42501`; updating or deleting team B's rows changes zero rows.
 - Given a channel used by a report schedule, then deleting it is `23503`.
+- Given a service-level channel (`team_id` null), then it holds no secret reference (`23514`, 000015):
+  the composite foreign key is not checked when `team_id` is null, and secrets are always team-owned.
 
 Proven by: `TestEveryTeamTableHasRowLevelSecurity` (RLS and an `afs_app` policy on both tables);
 `TestReportSchedulesIsolationTierAndIdempotencyKeys/scheduled reports go only to the team's own channels`
-(channel references and delete restriction). Cross-team invisibility, cross-team insert and the
-secret-reference foreign key on `log_destinations` and `notification_channels`: **pending**.
+(channel references and delete restriction); `TestLogDestinationsAndNotificationChannels` (all subtests:
+team callers see only their own, a row for another team or the service is refused, another team's rows
+cannot be changed or removed, credentials are a reference to the team's own secret, a secret in use
+cannot be deleted, a service-level channel holds no secret reference, a channel used by a report schedule
+cannot be deleted).
 
 **DB-US-35 · Swarm templates: service admins write, everyone reads.** *(refines US-22; WO-2)* As a service
 admin, I want the swarm template catalog to be writable only by service admins and readable by every
@@ -557,22 +582,24 @@ signed-in caller, so that a team cannot define its own remediation shape.
   template is refused by the API with `ValidationError`).
 
 Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/work orders track repositories and notify owners once`
-(service admin creates a template; a team's insert is `42501`; this subtest lives in `migrate_test.go`).
-Zero-row update and delete by a team, and read by a team caller: **pending**.
+(service admin creates a template; a team's insert is `42501`); `TestSwarmTemplatesCatalog` (all
+subtests: zero-row update and delete by a team, reads by a team caller, a security operator and a caller
+with no team, disabling keeps the row and its revisions).
 
 **DB-US-36 · A deleted team keeps its rows and history.** *(refines US-23; TEAM-9, D53)* As a service admin,
 I want a deleted team to stay as a row with `state = 'deleted'` and its usage, cost, revisions and audit
 to stay readable, so that nothing is lost when its resources go.
-- Given the reconciler records a teardown, when it sets `state = 'deleted'`, `deleted_at`, `torn_down_at`
-  and `teardown_reason`, then the team row and every row that references it remain; nothing is deleted
-  by cascade.
+- Given the reconciler records a deletion, when it sets `state = 'deleted'` and `deleted_at` (and, for an
+  ephemeral team, `torn_down_at` and `teardown_reason`), then the team row and every row that references
+  it remain; nothing is deleted by cascade.
 - Given a deleted team, then a service admin (or `afs_readonly`) can still read its `usage_events`,
   `cost_daily`, `config_revisions` and `audit_log` rows.
-- `torn_down_at` without a `teardown_reason` on a persistent team is `23514`.
+- `torn_down_at` on a persistent team, or without a `teardown_reason`, is `23514`.
 
 Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/teams due for teardown` (reconciler records
-`state = 'deleted'`; teardown time without reason `23514`). Reading usage, cost, revisions and audit of a
-deleted team: **pending**.
+`state = 'deleted'`; teardown time on a persistent team `23514`); `TestDeletedTeamKeepsItsHistory` (a
+persistent and an ephemeral team marked deleted keep every referencing row; a service admin and
+`afs_readonly` read their usage, cost, revisions and audit).
 
 
 **DB-US-37 · Repository owners resolved from team configuration.** *(refines US-16; WO-1; D38)* As `afs-api`,
@@ -608,15 +635,15 @@ nothing`, `only the API and reconciler may call it` (gateway `42501`).
 | Encryption | At rest: RDS storage encrypted with a customer-managed KMS key. In transit: TLS required (`rds.force_ssl = 1`); clients verify the RDS CA |
 | Authentication | Each service logs in as its own LOGIN user, a member of one NOLOGIN role from `bootstrap/roles.sql`, with IAM database authentication (`rds_iam`); no static passwords |
 | Connections | Per-service connection limits (`ALTER ROLE … CONNECTION LIMIT` on the LOGIN users, set by operators): `afs-api` 100, `afs-gateway` 100, `afs-reconciler` 20, `afs-billing` 10, `afs-migrate` 2, `afs_readonly` users 10 (working values, confirmed by the M3 load test, DB-OQ-3); their sum stays below 80% of `max_connections` of the reference instance |
-| Observability | `pg_stat_statements` on; `log_min_duration_statement` 500 ms (parameter group, `-restapi` Terraform); `afs-migrate version` reports the applied version; `migrate` should set a `lock_timeout` so a blocked DDL fails instead of queueing traffic behind it (not yet implemented: a task in the release spec) |
+| Observability | `pg_stat_statements` on; `log_min_duration_statement` 500 ms (parameter group, `-restapi` Terraform); `afs-migrate version` reports the applied version; `migrate` sets `lock_timeout` in each migration transaction (default 10 s, `WithLockTimeout`, `afs-migrate --lock-timeout`) so a blocked DDL fails with `55P03` instead of queueing traffic behind it (`TestLockTimeoutStopsBlockedMigration`) |
 | Security | No secret values; least-privilege grants per role, column grants where a role updates part of a row; audit append-only by trigger; RLS backs the API's checks |
-| Quality | `migrate` ≥ 90% coverage; every constraint has a rejected-case test; every RLS policy has an isolation test |
+| Quality | `migrate` ≥ 90% coverage (96.2% at 000015, `make cover` with `AFS_TEST_DATABASE_URL`); every constraint has a rejected-case test; every RLS policy has an isolation test (`TestCrossTeamWritesChangeNothing`) |
 
 ## 7. Delivery
 
 | Milestone (root PRD §9) | This repository |
 |---|---|
-| M0 Foundations | Schema 000001–000014, feature complete; first release tag `v0.13.0` (nothing is tagged yet, so it is the first release to contain 000011–000014) for `-restapi` to adopt |
+| M0 Foundations | Schema 000001–000015, feature complete; first release tag `v0.13.0` (nothing is tagged yet, so it is the first release to contain 000011–000015) for `-restapi` to adopt |
 | M3 Spend control | Load test of `reserve_spend` and `reserve_spend_held` with `-restapi` (concurrent bound, p99, RLS overhead); partition and retention jobs verified |
 | M4 Production readiness | Restore drill documented in `user-docs/` |
 
@@ -660,5 +687,5 @@ nothing`, `only the API and reconciler may call it` (gateway `42501`).
 | RDS, PITR, snapshot copy, KMS, IAM authentication, parameter group | `-restapi` Terraform (`deploy/terraform`) | RDS PostgreSQL 17 Multi-AZ, PITR, cross-account snapshot copy, `rds.force_ssl`, `rds_iam` LOGIN users, connection limits | Before M1 | M0–M4 |
 | Load test | `-restapi` | Concurrent `reserve_spend` bound, p99, RLS overhead | — | M3 |
 | CI | This repository | `postgres:17` service container for `make test-db` | Every PR | M0 |
-| Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013 and 000014 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
+| Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013, 000014 and 000015 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
 | Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D56, recorded in root PRD §10.1; ADR-015 in the root ADR log) | Scope and the 000013 and 000014 behaviour (D49, D54) | — | — |
