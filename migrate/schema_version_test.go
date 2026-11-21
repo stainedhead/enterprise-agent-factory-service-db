@@ -40,3 +40,24 @@ func TestSchemaVersionFunction(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentityProviderCLIClientID proves the CLI's public client id is stored separately from the
+// console's and is length-checked (D48).
+func TestIdentityProviderCLIClientID(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	insert := func(id, cli string) error {
+		_, err := conn.Exec(ctx, `INSERT INTO afs.identity_providers (id, name, kind, issuer_url, client_id, cli_client_id)
+			VALUES ($1, $1, 'okta', 'https://' || lower($1) || '.example.com', 'console-client', nullif($2, '-'))`, id, cli)
+		return err
+	}
+	if err := insert("idp_01JD3Z5Y8K2M4N6P8Q0R2S4TJ1", "afs-cli"); err != nil {
+		t.Errorf("provider with a CLI client id: %v", err)
+	}
+	if err := insert("idp_01JD3Z5Y8K2M4N6P8Q0R2S4TJ2", "-"); err != nil {
+		t.Errorf("provider without a CLI client id: %v", err)
+	}
+	if err := insert("idp_01JD3Z5Y8K2M4N6P8Q0R2S4TJ3", ""); sqlState(err) != "23514" {
+		t.Errorf("empty CLI client id: want 23514, got %v", err)
+	}
+}
