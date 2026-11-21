@@ -40,6 +40,37 @@ Purpose: decisions, edge cases and deviations, recorded as they happen. Update a
   are the data dictionary (`docs/data-model.md`) and the PRD, and AGENTS.md forbids duplicating them.
   `user-docs/` got getting-started, configuration and operations guides (operator material only, per the
   user-docs rule), linked from README.md.
+- **TD-13 X-DB-1..6 added in a new 000016, not folded into 000015.** The coordinator relayed six schema
+  access gaps from `-restapi` (its research.md §6) during Step 11. 000015 is unmerged and could have taken
+  them, but its scope is "gaps found by proof"; a separate `000016_service_access_functions` keeps each
+  migration's header honest and its down migration small. Stories DB-US-38 to DB-US-43, requirement DB-39.
+- **TD-14 Narrow SECURITY DEFINER entry points (ADR-008).** One function per pre-scope path, pinned
+  `search_path`, PUBLIC execute revoked, EXECUTE for the named roles only; the only new policies are
+  INSERT-only. No policy lets `afs_app` read another team's rows.
+- **TD-15 `authenticate_api_key` decides nothing.** It reports `state` (active, expired, revoked) and
+  `team_state` and lets the API answer `401`; it touches `last_used_at` only for a usable key, at most
+  once a minute. `principal` is the key id (the audit `actor_id`); `roles` is a one-element array so the
+  shape can grow.
+- **TD-16 Workload ServiceAccounts are `agent-<name>` and `pool-<name>`** in the team namespace
+  (`afs-t-<slug>`), as the reconciler names them; deleted agents or pools and teams that are not `active`
+  resolve to nothing.
+- **TD-17 `instantiate_work_order_team` choices.** Unknown work order `P0002` (no row, not a foreign key);
+  not open, no template, disabled template `55000`; slug `wo-<lowercase ulid>` (29 characters, unique by
+  construction); display name `Remediation: <CVE id or title>`; ceiling equals the budget so
+  `check_budget_ceiling` passes; cost center and owner email from the spec (`costCenter`, `ownerEmail`),
+  else the new checked settings `work_orders.cost_center` / `work_orders.owner_email`, else `55000` (no
+  invented defaults); pools name their stage by `stage` (a name, since template stages have no ids);
+  handoffs and configuration values name pools by name. Template `secrets` are not created: a secret row
+  needs the ARN Secrets Manager assigns, and `afs_reconciler` cannot insert `secrets`. Recorded as a
+  follow-up for `-restapi` (see below).
+- **TD-18 Audit and outbox insert policies.** `app_own_audit` allows any team (or none) when `actor_id =
+  afs.current_actor()`; `app_operator_work_order_events` allows `work_order.*` events on `work_orders` from
+  a security operator. Both are INSERT only: an `INSERT … RETURNING` outside the caller's scope still fails
+  because RETURNING needs a SELECT policy; the API must not use RETURNING for these rows.
+  `TestCrossTeamWritesChangeNothing` now treats a table as "scoped only" when no other SELECT or ALL policy
+  exists, so INSERT-only policies keep the read check.
+- **TD-19 `afs.new_id(prefix)`** generates ULIDs in SQL (48-bit milliseconds from `clock_timestamp()`, 80
+  random bits from `gen_random_uuid()` with the version and variant bits skipped); owner only.
 - **TD-4 Spec directory name.** `261121-db-feature-complete` (shorter than the PRD-derived
   `enterprise-agent-factory-service-db`), as requested; the dashboard keeps the PRD-derived feature name.
 
@@ -73,6 +104,12 @@ tasks.md filled with T1–T9.
 
 Coverage `migrate`: 81.4% → 96.2%. Tests: 160 → 280 passing (sub)tests, 1 skipped (exempt table).
 
+T10 (000016): `TestAuthenticateAPIKey`, `TestResolveWorkload`, `TestTeamDirectory`,
+`TestInstantiateWorkOrderTeam`, `TestReconcilerMarksPoolsDeleted` and `TestServiceAuditAndOutboxInserts`
+written first and red against 000015 (functions missing, `42501` on the pool update and the inserts);
+green with 000016; then the settings check added red→green. Tests: 284 → 327 passing (sub)tests (53
+top-level), 1 skipped; coverage `migrate` 96.5%.
+
 ## Edge Cases & Solutions
 
 - Crockford base32: fixture ids must avoid I, L, O, U (`afs.ulid_ok`).
@@ -85,5 +122,12 @@ Coverage `migrate`: 81.4% → 96.2%. Tests: 160 → 280 passing (sub)tests, 1 sk
 - PRD wording corrected where the schema was right and the text was not: cross-team handoff `23503`
   (DB-US-14); a persistent team's deletion sets `state` and `deleted_at` only (DB-US-36,
   `teams_teardown_ephemeral`).
+
+## Follow-ups for `-restapi`
+
+- Swarm template `secrets` are not created by `afs.instantiate_work_order_team`: the reconciler must create
+  them in Secrets Manager and needs a way to record the rows (a further `SECURITY DEFINER` function or an
+  INSERT grant on `secrets` / `pool_secret_bindings` for `afs_reconciler`). Not requested in X-DB-1..6.
+- Do not use `INSERT … RETURNING` for audit or outbox rows written under the 000016 insert policies.
 
 ## Lessons Learned

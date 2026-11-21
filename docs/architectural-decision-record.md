@@ -58,3 +58,18 @@ Decisions local to this repository. Cross-repo decisions live in the root reposi
 - Decision: a `BEFORE` trigger computes `status` from the row and `billing.variance_alert_pct`; another
   sets `api_keys.created_at = now()` on insert and refuses a change.
 - Consequences: writers may omit these values; rows written before 000015 keep theirs.
+
+## ADR-008 Pre-scope lookups and reconciler writes go through named SECURITY DEFINER functions
+
+- Status: Accepted (000016 release)
+- Context: `afs-api` must find an API key or a workload before it knows the caller's team, list the team
+  directory for security operators who see no team, and the reconciler must create remediation teams
+  although it may not write desired state chosen by people (`-restapi` X-DB-1 to X-DB-4).
+- Decision: one `SECURITY DEFINER` function per path (`authenticate_api_key`, `resolve_workload`,
+  `team_directory`, `instantiate_work_order_team`), each with a pinned `search_path`, no PUBLIC execute and
+  EXECUTE for the one or two roles that need it, returning only the columns the caller needs. Policies stay
+  team-scoped; the only new policies are INSERT-only (own audit rows, security operator work order events).
+- Consequences: no service admin session is needed for a lookup, and no role gains read access to other
+  teams' rows. Each function is a reviewed entry point with catalog-checked grants
+  (`executableBy` in `migrate/service_access_test.go`); a new pre-scope need is a new function, not a
+  wider policy.

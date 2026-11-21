@@ -51,6 +51,8 @@ Service admins change these through the API. Values are JSON and checked by the 
 | `teams.ephemeral_max_days` | 90 | 1–365 |
 | `work_orders.sla_warning_hours` | 48 | 1–720 |
 | `work_orders.notification_channel_id` | null | null or a service-level email channel |
+| `work_orders.cost_center` | unset | string, 1–100 characters; cost center of a remediation team whose swarm template names none |
+| `work_orders.owner_email` | unset | string `local@domain`; owner of a remediation team whose swarm template names none |
 | `secrets.path_prefix` | `afs` | managed Secrets Manager path prefix |
 
 The full list, with the remaining keys, is in [docs/data-model.md](../docs/data-model.md).

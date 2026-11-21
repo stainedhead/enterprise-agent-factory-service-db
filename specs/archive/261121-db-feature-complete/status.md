@@ -28,3 +28,5 @@ None.
 - 2026-11-21 Docs updated (step 4); review PRD written and finalized (steps 5–6).
 - 2026-11-21 Archived to specs/archive/ (step 7); 100% complete.
 - 2026-11-21 T8 done: PRD Proven-by lines name the real tests; no repo-owned pending left.
+- 2026-11-21 T9 done: `make gate` and integration tests green (migrate 96.5%).
+- 2026-11-21 T10 done: X-DB-1..6 in 000016 (red: 6 tests failing; green: 327 passing subtests, 1 skip); down restores 000015 exactly (pg_dump).

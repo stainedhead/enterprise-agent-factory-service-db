@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Feature complete, schema 000015 (2026-11-21): every acceptance criterion provable in this repository has a named, passing test |
+| **Status** | Feature complete, schema 000016 (2026-11-21): every acceptance criterion provable in this repository has a named, passing test |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
 | **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-26) |
 | **Provides** | [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
@@ -43,10 +43,10 @@ copies, KMS keys and IAM database authentication (Terraform lives in `-restapi/d
 ## 4. Requirements owned
 
 Each row traces a product requirement to the objects that implement it. Status: ✓ in schema at
-`000015`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
+`000016`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
 DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45); DB-35 and DB-36 close the two gaps left
 open at 000013 (root D54, D49); DB-37 adds owner resolution for work orders (root D38); DB-38 closes the
-gaps the 000015 proofs revealed.
+gaps the 000015 proofs revealed; DB-39 adds the service access paths `-restapi` needs (its X-DB-1 to X-DB-6).
 
 | DB req | Product req | Objects | Status |
 |---|---|---|---|
@@ -88,13 +88,14 @@ gaps the 000015 proofs revealed.
 | DB-36 Export and import transport | CFG-5, D49 | `export_bundles`: nullable `s3_uri` and `sha256`, `download_url`, `download_expires_at`, `size_bytes`, `export_bundles_succeeded_check`, `export_bundles_export_succeeded_check`, reconciler column grants | ✓ |
 | DB-37 Repository owner resolution | WO-1, D38 | `afs.resolve_repo_owners(host, repo)` (000014, `SECURITY DEFINER`, executable by `afs_app` and `afs_reconciler` only), reading namespace config value `AFS_OWNED_REPOS` | ✓ |
 | DB-38 Gaps closed by proof | SEC-1, BUD-6, TEAM-7, ACC-4 | 000015: `notification_channels_service_no_secret`, `teams_due_for_teardown` lists only teams due, `cost_reconciliation_status` (derived `status`) and `cost_reconciliations_amounts_check`, `api_key_created_at_guard`, `agents_image_digest_check` and `agent_pools_image_digest_check`; `migrate` sets `lock_timeout` per migration (`DefaultLockTimeout`, `WithLockTimeout`, `afs-migrate --lock-timeout`) | ✓ |
+| DB-39 Service access paths | ACC-2, ACC-3, ACC-4, AGT-7, AGT-8, WO-1, WO-2, CFG-3 | 000016: `afs.authenticate_api_key(key_sha256)` (`afs_app`), `afs.resolve_workload(namespace, service_account)` (`afs_app`, `afs_gateway`), `afs.team_directory()` (`afs_app`; service admins and security operators), `afs.instantiate_work_order_team(work_order_id)` (`afs_reconciler`), all `SECURITY DEFINER`; `afs.new_id(prefix)` (owner only); settings `work_orders.cost_center` and `work_orders.owner_email` (`service_settings_work_order_team_check`); `UPDATE (state, deleted_at)` on `agent_pools` for `afs_reconciler`; INSERT policies `app_own_audit` (audit_log) and `app_operator_work_order_events` (outbox_events) for `afs_app` | ✓ |
 
 ## 5. User stories and acceptance criteria
 
-Stories are implemented by migrations 000001 to 000015. Each story ends with **Proven by:**, naming the
+Stories are implemented by migrations 000001 to 000016. Each story ends with **Proven by:**, naming the
 integration test (`migrate/migrate_test.go`, `migrate/hardening_test.go` for 000013,
 `migrate/templates_exports_test.go` for 000014, `migrate/feature_complete_test.go` for the proofs and
-fixes of 000015, `migrate/runner_test.go` for the runner) that proves each criterion, written
+fixes of 000015, `migrate/service_access_test.go` for 000016, `migrate/runner_test.go` for the runner) that proves each criterion, written
 `TestName/subtest`. Where a criterion cannot be proven in this repository it names the milestone and
 owner. No criterion is **pending**. All named tests pass against `postgres:17`.
 
@@ -624,6 +625,99 @@ Proven by: `TestResolveRepoOwners` in `migrate/templates_exports_test.go`: `exac
 `matching ignores case`, `two wildcards are ambiguous`, `host must match`, `no owner`, `deleted teams own
 nothing`, `only the API and reconciler may call it` (gateway `42501`).
 
+**DB-US-38 · API keys found by hash before the team is known.** *(refines US-2; ACC-4; X-DB-1)* As `afs-api`,
+I want to look up an API key by its SHA-256 before I know the caller's team, so that team keys and
+service-level keys (no team) authenticate under row-level security.
+- `afs.authenticate_api_key(key_sha256)` returns, for a matching key, `key_id`, `team_id` (NULL for a
+  service-level key), `principal` (the key id, the audit `actor_id`), `role` and `roles`, `expires_at`,
+  `revoked_at`, `state` (`active`, `expired` or `revoked`) and `team_state`; no row for an unknown hash.
+  It never returns the hash or any secret.
+- Given an active key of an active team (or a service key), then `last_used_at` is set, at most once a
+  minute; an expired or revoked key's is not.
+- Given a caller with no `afs.team_ids` and no service admin setting, then the lookup still works.
+- Given any role other than `afs_app` (or PUBLIC), when it calls the function, then `42501`.
+
+Proven by: `TestAuthenticateAPIKey` in `migrate/service_access_test.go`: `team key found without team
+scope`, `last_used_at at most once a minute`, `service key has no team`, `expired and revoked keys are
+reported, not used`, `suspended team is reported`, `unknown key`, `no hash or secret in the result`, `only
+the API may call it` (catalog check of every role; gateway `42501`).
+
+**DB-US-39 · Workloads resolved from namespace and ServiceAccount.** *(refines US-16; AGT-7, AGT-8; X-DB-2)* As
+`afs-api` and `afs-gateway`, I want to map a workload token's namespace and ServiceAccount to its team and
+agent or pool, so that a workload principal gets its scope before any team row is visible.
+- `afs.resolve_workload(namespace, service_account)` returns `(team_id, agent_id, NULL)` for
+  ServiceAccount `agent-<name>` and `(team_id, NULL, pool_id)` for `pool-<name>`, in the team whose
+  namespace it is.
+- Given another team's namespace, a name without the kind prefix, `default`, a pool name asked as an agent,
+  or a namespace that is not a team's, then no row.
+- Given a team that is not `active`, or an agent or pool that is `deleted`, then no row.
+- Only `afs_app` and `afs_gateway` may call it.
+
+Proven by: `TestResolveWorkload` in `migrate/service_access_test.go`: `agent`, `pool, for the gateway
+too`, `no match`, `only active teams and live workloads`, `only the API and gateway may call it`.
+
+**DB-US-40 · Team directory for service admins and security operators.** *(refines US-22; ACC-2, WO-1; X-DB-3)*
+As a security operator, I want the id, slug and display name of every team, so that I can address a work
+order without being able to read any team's rows.
+- `afs.team_directory()` returns `id`, `slug`, `display_name` of every team whose `state` is not
+  `deleted`, ordered by slug, when `afs.service_admin` or `afs.security_operator` is on.
+- Given a team member or a caller with neither setting, then `42501`.
+- Only `afs_app` may call it.
+
+Proven by: `TestTeamDirectory` in `migrate/service_access_test.go`: `security operator sees every team
+not deleted`, `service admin sees every team not deleted`, `team member is refused`, `no role is refused`,
+`only the API may call it`.
+
+**DB-US-41 · Remediation teams created from work orders.** *(refines US-22; WO-2; RC-12; X-DB-4)* As the
+reconciler, I want one call that creates a work order's ephemeral remediation team from its swarm
+template, so that I need no write access to desired state chosen by people.
+- `afs.instantiate_work_order_team(work_order_id)` creates an ephemeral team (`slug` `wo-<ulid>`,
+  teardown rule and expiry from the template's `teardown_rule` and `ttl_hours`, cost center and owner email
+  from the template spec or service settings `work_orders.cost_center` / `work_orders.owner_email`,
+  ceiling equal to the budget), its tags, a lifetime budget that blocks at the cap
+  (`work_orders.budget_usd`, else the template's `budget_usd`), the pools' models, stages, pools (stage by
+  name), handoffs and literal pool configuration values; sets the work order's `team_id`, `status =
+  assigned` and `assigned_at`; writes an audit row (`InstantiateWorkOrderTeam`) and outbox events
+  `team.created`, `pool.created` per pool and `work_order.assigned`; triggers write the revisions. It
+  returns the team id.
+- Given a work order that already has a team, then it returns that team and writes nothing; two
+  concurrent calls create one team.
+- Given an unknown work order `P0002`; one that is not open, has no template, or whose template is
+  disabled, or no cost center or owner email anywhere, `55000`; a pool model that does not exist `23503`;
+  a refused call leaves nothing behind.
+- Settings `work_orders.cost_center` (a string of 1–100 characters) and `work_orders.owner_email` (a string
+  `local@domain`) are checked: any other value is `23514`.
+- Template secrets are not created: a secret row needs the ARN Secrets Manager assigns.
+- Only `afs_reconciler` may call it (`afs_app` `42501`).
+
+Proven by: `TestInstantiateWorkOrderTeam` in `migrate/service_access_test.go`: `creates the team from the
+template`, `assigns the work order`, `writes audit, outbox and revisions`, `a second call returns the same
+team`, `concurrent calls create one team`, `budget from the template, owner from service settings` (and the settings' rejected values `23514`),
+`refused/*` (unknown, no template, cancelled, template disabled, model not in models), `only the
+reconciler may call it`.
+
+**DB-US-42 · The reconciler completes pool deletion.** *(refines US-22; AGT-8; RC-17; X-DB-5)* As the
+reconciler, I want to mark a pool `deleted` once its resources are gone, as I do for agents and teams.
+- `afs_reconciler` may update `agent_pools.state` and `deleted_at`, and no other pool column (`42501`).
+
+Proven by: `TestReconcilerMarksPoolsDeleted`.
+
+**DB-US-43 · Audit and outbox rows outside the caller's team scope.** *(refines US-14; ACC-3, CFG-3; X-DB-6)* As
+`afs-api`, I want to record a denied request on a service route or on a team the caller does not see, and
+a security operator's work order events on any team, so that every decision is audited.
+- `afs_app` may insert an `audit_log` row whose `actor_id` is `afs.current_actor()`, whatever its
+  `team_id`; a row naming another actor outside the caller's scope is `42501`. The caller still sees only
+  its own teams' rows.
+- With `afs.security_operator` on, `afs_app` may insert `outbox_events` with `aggregate_kind =
+  'work_orders'` and an event type `work_order.*`, whatever the team; any other event outside the caller's
+  scope is `42501`.
+
+Proven by: `TestServiceAuditAndOutboxInserts` in `migrate/service_access_test.go`: `own denied request with
+no team`, `own denied request on a team the caller does not see`, `another actor's row is refused`, `the
+rows stay invisible to the caller`, `security operator work order events on any team`, `other events are
+refused`; `TestCrossTeamWritesChangeNothing/audit_log` and `/outbox_events` (still no update, delete or
+read across teams).
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |
@@ -640,13 +734,13 @@ nothing`, `only the API and reconciler may call it` (gateway `42501`).
 | Connections | Per-service connection limits (`ALTER ROLE … CONNECTION LIMIT` on the LOGIN users, set by operators): `afs-api` 100, `afs-gateway` 100, `afs-reconciler` 20, `afs-billing` 10, `afs-migrate` 2, `afs_readonly` users 10 (working values, confirmed by the M3 load test, DB-OQ-3); their sum stays below 80% of `max_connections` of the reference instance |
 | Observability | `pg_stat_statements` on; `log_min_duration_statement` 500 ms (parameter group, `-restapi` Terraform); `afs-migrate version` reports the applied version; `migrate` sets `lock_timeout` in each migration transaction (default 10 s, `WithLockTimeout`, `afs-migrate --lock-timeout`) so a blocked DDL fails with `55P03` instead of queueing traffic behind it (`TestLockTimeoutStopsBlockedMigration`) |
 | Security | No secret values; least-privilege grants per role, column grants where a role updates part of a row; audit append-only by trigger; RLS backs the API's checks |
-| Quality | `migrate` ≥ 90% coverage (96.5% at 000015, `make cover` with `AFS_TEST_DATABASE_URL`); every constraint has a rejected-case test; every RLS policy has an isolation test (`TestCrossTeamWritesChangeNothing`) |
+| Quality | `migrate` ≥ 90% coverage (96.5% at 000016, `make cover` with `AFS_TEST_DATABASE_URL`); every constraint has a rejected-case test; every RLS policy has an isolation test (`TestCrossTeamWritesChangeNothing`) |
 
 ## 7. Delivery
 
 | Milestone (root PRD §9) | This repository |
 |---|---|
-| M0 Foundations | Schema 000001–000015, feature complete; first release tag `v0.13.0` (nothing is tagged yet, so it is the first release to contain 000011–000015) for `-restapi` to adopt |
+| M0 Foundations | Schema 000001–000016, feature complete; first release tag `v0.13.0` (nothing is tagged yet, so it is the first release to contain 000011–000016) for `-restapi` to adopt |
 | M3 Spend control | Load test of `reserve_spend` and `reserve_spend_held` with `-restapi` (concurrent bound, p99, RLS overhead); partition and retention jobs verified |
 | M4 Production readiness | Restore drill documented in `user-docs/` |
 
@@ -690,5 +784,5 @@ nothing`, `only the API and reconciler may call it` (gateway `42501`).
 | RDS, PITR, snapshot copy, KMS, IAM authentication, parameter group | `-restapi` Terraform (`deploy/terraform`) | RDS PostgreSQL 17 Multi-AZ, PITR, cross-account snapshot copy, `rds.force_ssl`, `rds_iam` LOGIN users, connection limits | Before M1 | M0–M4 |
 | Load test | `-restapi` | Concurrent `reserve_spend` bound, p99, RLS overhead | — | M3 |
 | CI | This repository | `postgres:17` service container for `make test-db` | Every PR | M0 |
-| Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013, 000014 and 000015 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
+| Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013, 000014, 000015 and 000016 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
 | Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D56, recorded in root PRD §10.1; ADR-015 in the root ADR log) | Scope and the 000013 and 000014 behaviour (D49, D54) | — | — |

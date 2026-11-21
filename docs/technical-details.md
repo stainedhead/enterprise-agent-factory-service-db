@@ -20,6 +20,7 @@
 | `migrate/hardening_test.go` | 000013: guards, spend periods, change feed, retention, runtime settings |
 | `migrate/templates_exports_test.go` | 000014: agent templates, export bundles, repository owners |
 | `migrate/feature_complete_test.go` | Catalog-driven proofs (every team table's isolation, every revision table's feed), the 000015 fixes and the remaining PRD criteria |
+| `migrate/service_access_test.go` | 000016: API key lookup, workload resolution, team directory, remediation team instantiation, pool deletion grant, audit and outbox insert policies |
 | `cmd/afs-migrate/main_test.go` | Argument checks |
 
 Integration tests need `AFS_TEST_DATABASE_URL` and create one database per test. The catalog-driven tests

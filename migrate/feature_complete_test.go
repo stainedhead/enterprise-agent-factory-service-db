@@ -117,7 +117,8 @@ func TestCrossTeamWritesChangeNothing(t *testing.T) {
 		SELECT c.relname,
 		       CASE WHEN c.relname = 'teams' THEN 'id' ELSE 'team_id' END,
 		       NOT EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname = 'afs' AND p.tablename = c.relname
-		                     AND 'afs_app' = ANY (p.roles) AND p.policyname <> 'app_team_scope')
+		                     AND 'afs_app' = ANY (p.roles) AND p.policyname <> 'app_team_scope'
+		                     AND p.cmd IN ('ALL', 'SELECT'))
 		  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 		 WHERE n.nspname = 'afs' AND c.relkind IN ('r', 'p') AND c.relrowsecurity AND NOT c.relispartition
 		   AND (c.relname = 'teams' OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid

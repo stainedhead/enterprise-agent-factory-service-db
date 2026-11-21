@@ -1,9 +1,9 @@
 # Tasks: db-feature-complete
 
-**Date:** 2026-11-21 · **Status:** In progress
+**Date:** 2026-11-21 · **Status:** Complete
 
 ## Progress Summary
-8/9 tasks complete (T9 runs with every commit and at Step 11)
+10/10 tasks complete
 
 | Id | Task | FRs | Deps | Est. | Acceptance | Status |
 |---|---|---|---|---|---|---|
@@ -15,4 +15,5 @@
 | T6 | Change feed table-driven; retention for activity and traffic; deleted team history; concurrent reservations; lock headers | FR-002, FR-005, FR-009, FR-010, FR-017 | — | 60 min | tests pass | Done |
 | T7 | Migration 000015 for gaps found by T2–T6 | — | T2–T6 | 30 min | up/down/up, pg_dump equal after down | Done |
 | T8 | PRD Proven-by lines and status to 000015 | — | T1–T7 | 20 min | no repo-owned **pending** left | Done |
-| T9 | Quality gate and integration run | — | all | 10 min | green | Not started |
+| T9 | Quality gate and integration run | — | all | 10 min | green | Done |
+| T10 | X-DB-1..6 from `-restapi` (coordinator request): migration 000016, `migrate/service_access_test.go`, PRD DB-US-38..43 and DB-39, data model, ADR-008, root database contract | — | T9 | 90 min | red then green; pg_dump equal after down; gate green | Done |
