@@ -48,7 +48,7 @@ erDiagram
 |---|---|---|
 | `service_settings` | Service-wide settings (key → JSON) | Service admins only |
 | `users` | People, provisioned just-in-time from OIDC | Unique `(oidc_issuer, oidc_subject)`, unique `lower(email)` |
-| `teams` | A software factory; one namespace | `slug` fixes `namespace = afs-t-<slug>`; `kind` persistent/ephemeral (ephemeral requires `expires_at`); `max_budget_usd` ceiling; `state` active/suspended/deleting/deleted; `allowed_aws_accounts` glob patterns over organization account ids and names (`*` = all) that bound cross-account role links, set by service admins; `may_add_external_systems` lets the team declare its own external systems and `may_manage_aws_accounts` lets its team-admins set `allowed_aws_accounts` (000009), both set by service admins (guarded by trigger for `afs_app` callers who are not service admins) |
+| `teams` | A software factory; one namespace | `slug` fixes `namespace = afs-t-<slug>`; `kind` persistent/ephemeral (ephemeral requires `expires_at`); `max_budget_usd` ceiling; `state` active/suspended/deleting/deleted; `allowed_aws_accounts` glob patterns over organization account ids and names (`*` = all) that bound cross-account role links, set by service admins; `may_add_external_systems` lets the team declare its own external systems and `may_manage_aws_accounts` lets its team-admins set `allowed_aws_accounts` (000009), both set by service admins (guarded by trigger for `afs_app` callers who are not service admins); `identity_provider_id` the service-level provider the team's people sign in with (NULL = the service default; must be enabled), chosen when the team is created or managed (000010) |
 | `role_bindings` | Who holds which role where | `service_admin` ⇔ `team_id IS NULL`; subject is a user or an IdP group |
 | `api_keys` | Team-scoped keys for pipelines | SHA-256 only, shown once, `expires_at ≤ created_at + 90 days` |
 | `models` | Bedrock models in the catalog | `id` is the Bedrock model id |
@@ -65,7 +65,12 @@ erDiagram
 | `agent_volume_snapshots` | EBS snapshot history per agent volume | Reconciler-written; `afs_app` may only insert `manual` requests for its own team; rows kept as history; referenced by export bundles |
 | `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team; an agent secret binds only to its own agent (trigger) |
 | `agent_identities` | ServiceAccount, IAM role, GitHub App, external | One per `(team, agent, kind)`; credentials as `secret_id` |
-| `identity_providers` | OIDC providers (Okta, Microsoft Entra ID) at service level (`team_id` NULL) or for one team | One service-level default (Okta by convention); HTTPS issuer; client secret as a Secrets Manager ARN only; service admins write, everyone reads service-level rows, a team reads its own; group `role_bindings` may name one (`identity_provider_id`, service-level or own team's) |
+| `identity_providers` | OIDC providers (Okta, Microsoft Entra ID), service level only (000010 removed the team-level providers of 000009) | One default (Okta by convention), which must stay enabled; unique HTTPS issuer; client secret as a Secrets Manager ARN only; service admins write, every caller reads; cannot be disabled while a team uses it; service-level group `role_bindings` may name one (`identity_provider_id`), team bindings use the team's provider and name none |
+| `service_tags` | Cost-allocation tag keys defined by service admins | `mode` fixed (one `value` for every team) or required (every team gives a value, optionally from `allowed_values`; `default_value` covers teams that predate the key); keys follow AWS tag rules, case-insensitively unique, never `aws:`/`afs-`/`afs:` or credential-like; cannot become fixed while teams set the key |
+| `team_tags` | A team's values for required keys plus its own optional tags | Cannot set a fixed key or a value outside `allowed_values`; at most 45 tags with the service's; a new team must give every required key without a default in its creating transaction, and cannot remove one later (deferred constraint triggers) |
+| `team_effective_tags` (view) | Every tag a team carries and its `source` | system (`afs-team-id`), service (fixed), team, service_default, or missing (required key with no value: `value` NULL) |
+| `agent_effective_tags` (view) | Tags on an agent's AWS resources, pod (`/etc/afs/tags`) and Bedrock calls | The team's tags with values, plus system tag `afs-agent-id`; read by the reconciler and the gateway |
+| `cost_daily_by_tag`, `agent_activity_daily_by_tag`, `external_traffic_daily_by_tag` (views) | Reporting rollups by tag key and value | Attribute each team's daily figures to its current tags; system keys left out; `tag_value` NULL = untagged; RLS applies |
 | `external_systems` | Catalog of outside services agents may reach | `team_id` NULL = service catalog (service admins write it; every team reads it), set = declared by that team (needs `teams.may_add_external_systems`; `owner` and `purpose` required; cannot reuse a catalog slug); `endpoints` hosts or `*.domain` with optional port, rendered into each agent's egress policy; `enabled` off switches it off at and below its level; `builtin` entries (Atlassian, GitHub, Outlook, Microsoft Teams, Azure, Google, Slack, Okta, OpenAI, OpenRouter) cannot be deleted; category `llm` = non-Bedrock model provider, not metered or capped, seeded off. Replaces `team_egress_rules` (000007) |
 | `external_system_optouts` | Switches a system off for a whole team (`agent_id` NULL) or one agent | Default on; a row only narrows; unique per (team, agent, system) |
 | `agent_external_access` (view) | Effective access per agent and system | `disabled_at` service/team/agent, or NULL when allowed; read by the reconciler and the API |
@@ -80,7 +85,8 @@ erDiagram
 | `budget_threshold_events` | Thresholds already crossed per period | PK makes alerts fire once |
 | `usage_events` | Per-request ledger from the gateway | Partitioned monthly by `occurred_at`; `ensure_usage_partition(month)` |
 | `cost_daily` | Daily cost by team/agent/model and source | Sources: gateway, cur_bedrock, cur_eks, cur_other; `calls` counts model calls for gateway rows (000008) |
-| `cost_reconciliations` | Gateway estimate vs billed, per team-day | `variance_pct` generated |
+| `cost_reconciliations` | Gateway estimate vs billed, per team-day | `variance_pct` generated; `over_threshold` when beyond setting `billing.variance_alert_pct` (default 5) |
+| `model_price_proposals` | New model prices the billing job reads from the AWS Price List (setting `pricing.price_list_sync`) | One pending per model; only service admins approve or reject, only the billing job supersedes; approval writes a `model_prices` row (source `aws_price_list`) effective no earlier than the approval |
 | `log_destinations` | Per-team log delivery | Non-secret config JSON; tokens via `secret_id` |
 | `notification_channels` | Slack, email, webhook, Jira, EventBridge | `team_id NULL` = service-level |
 | `work_orders` | Phase 2/3 jobs, incl. CVE remediation | CVE id format and SLA required for `cve_remediation` |
@@ -100,6 +106,8 @@ erDiagram
 | `afs.ensure_usage_partition(month) → text` | reconciler | Create next month's `usage_events` partition |
 | `afs.caller_sees_team(team_id) → boolean` | RLS | True for service admins or teams in `afs.team_ids` |
 | `afs.current_actor() → text` | defaults, triggers | `afs.actor` setting or `system:<session_user>` |
+| `afs.tag_key_ok(key)`, `afs.tag_value_ok(value)`, `afs.tag_values_ok(values)` | tag checks | AWS tag character rules; reserved and credential-like keys refused |
+| `afs.team_missing_required_tags(team_id, key) → text` | required-tag triggers, API | Required keys without a default that the team has not set |
 
 ## Roles and session settings
 
