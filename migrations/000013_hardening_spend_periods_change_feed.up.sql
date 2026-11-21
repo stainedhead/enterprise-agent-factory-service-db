@@ -249,16 +249,23 @@ BEGIN
   RETURN v_id;
 END $$;
 
--- Settles a held reservation with the actual cost. Returns false if it was already released (expired
--- or settled), in which case the actual cost is still recorded.
-CREATE FUNCTION afs.settle_reservation(p_id uuid, p_actual numeric) RETURNS boolean
+-- Settles a held reservation with the actual cost and returns true. If the hold was already released
+-- (it expired, or was settled before), it returns false and still adds the actual cost to the period
+-- named by the caller, so a call that outlives the TTL is never lost from spend.
+CREATE FUNCTION afs.settle_reservation(p_id uuid, p_budget_id text, p_period_start timestamptz,
+                                       p_actual numeric) RETURNS boolean
   LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, afs AS $$
 DECLARE
   r afs.spend_reservations;
 BEGIN
   DELETE FROM afs.spend_reservations WHERE id = p_id RETURNING * INTO r;
   IF r.id IS NULL THEN
+    PERFORM afs.settle_spend(p_budget_id, p_period_start, 0, p_actual);
     RETURN false;
+  END IF;
+  IF r.budget_id <> p_budget_id OR r.period_start <> p_period_start THEN
+    RAISE EXCEPTION 'reservation % belongs to another budget period', p_id
+      USING ERRCODE = 'invalid_parameter_value';
   END IF;
   PERFORM afs.settle_spend(r.budget_id, r.period_start, r.amount_usd, p_actual);
   RETURN true;
@@ -279,11 +286,11 @@ BEGIN
 END $$;
 
 REVOKE EXECUTE ON FUNCTION afs.ensure_spend_counter(text, timestamptz),
-  afs.reserve_spend_held(text, timestamptz, numeric, text), afs.settle_reservation(uuid, numeric),
+  afs.reserve_spend_held(text, timestamptz, numeric, text), afs.settle_reservation(uuid, text, timestamptz, numeric),
   afs.release_expired_reservations() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION afs.ensure_spend_counter(text, timestamptz) TO afs_gateway, afs_reconciler;
 GRANT EXECUTE ON FUNCTION afs.reserve_spend_held(text, timestamptz, numeric, text),
-  afs.settle_reservation(uuid, numeric) TO afs_gateway;
+  afs.settle_reservation(uuid, text, timestamptz, numeric) TO afs_gateway;
 GRANT EXECUTE ON FUNCTION afs.release_expired_reservations() TO afs_reconciler;
 GRANT SELECT ON afs.spend_reservations TO afs_reconciler, afs_readonly;
 

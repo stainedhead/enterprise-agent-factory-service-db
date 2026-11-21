@@ -207,9 +207,40 @@ func TestHardeningSpendPeriodsAndChangeFeed(t *testing.T) {
 			if _, err := tx.Exec(ctx, gateway); err != nil {
 				return err
 			}
-			return tx.QueryRow(ctx, `SELECT afs.settle_reservation($1::uuid, 2)`, *held).Scan(&settled)
+			return tx.QueryRow(ctx, `SELECT afs.settle_reservation($1::uuid, $2, $3, 2)`, *held, budgetA, period).Scan(&settled)
 		}); err != nil || settled {
 			t.Errorf("settling a released reservation returned %v, %v; want false", settled, err)
+		}
+		if err := conn.QueryRow(ctx, `SELECT reserved_usd, spent_usd FROM afs.spend_counters WHERE budget_id = $1 AND period_start = $2`, budgetA, period).Scan(&reserved, &spent); err != nil || reserved != 0 || spent != 2 {
+			t.Errorf("a late settle must still record the cost: reserved=%v spent=%v (%v)", reserved, spent, err)
+		}
+		var live *string
+		var ok bool
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, gateway); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT afs.reserve_spend_held($1, $2, 10, 'gw-1')::text`, budgetA, period).Scan(&live); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT afs.settle_reservation($1::uuid, $2, $3, 3)`, *live, budgetA, period).Scan(&ok)
+		}); err != nil || !ok {
+			t.Fatalf("settle live reservation = %v, %v", ok, err)
+		}
+		if err := conn.QueryRow(ctx, `SELECT reserved_usd, spent_usd FROM afs.spend_counters WHERE budget_id = $1 AND period_start = $2`, budgetA, period).Scan(&reserved, &spent); err != nil || reserved != 0 || spent != 5 {
+			t.Errorf("after settle reserved=%v spent=%v (%v); want 0 and 5", reserved, spent, err)
+		}
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, gateway); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT afs.reserve_spend_held($1, $2, 1, 'gw-1')::text`, budgetA, period).Scan(&live); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `SELECT afs.settle_reservation($1::uuid, $2, $3, 1)`, *live, budgetA, period.AddDate(0, 1, 0))
+			return err
+		}); sqlState(err) != "22023" {
+			t.Errorf("settle against another period: want 22023, got %v", err)
 		}
 		if _, err := run(gateway, `SELECT afs.ensure_spend_counter('bud_01JD3Z5Y8K2M4N6P8Q0R2S4TZZ', now())`); sqlState(err) != "23503" {
 			t.Errorf("unknown budget: want 23503, got %v", err)

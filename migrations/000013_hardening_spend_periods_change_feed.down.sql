@@ -24,7 +24,7 @@ DROP FUNCTION afs.notify_desired_state();
 
 -- 6. Spend periods and reservations
 DROP FUNCTION afs.release_expired_reservations();
-DROP FUNCTION afs.settle_reservation(uuid, numeric);
+DROP FUNCTION afs.settle_reservation(uuid, text, timestamptz, numeric);
 DROP FUNCTION afs.reserve_spend_held(text, timestamptz, numeric, text);
 DROP FUNCTION afs.ensure_spend_counter(text, timestamptz);
 DROP TABLE afs.spend_reservations;
