@@ -2179,3 +2179,44 @@ func TestSwarmsEphemeralTeamsAndWorkOrders(t *testing.T) {
 		}
 	})
 }
+
+func TestWorkOrderOutsideContactChannel(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	set := func(v string) error {
+		_, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = $1::jsonb WHERE key = 'work_orders.notification_channel_id'`, v)
+		return err
+	}
+	const svcEmail = "nch_01JD3Z5Y8K2M4N6P8Q0R2S4TA1"
+	const svcSlack = "nch_01JD3Z5Y8K2M4N6P8Q0R2S4TA2"
+	const teamEmail = "nch_01JD3Z5Y8K2M4N6P8Q0R2S4TA3"
+	for _, c := range []struct{ id, team, kind string }{{svcEmail, "", "email"}, {svcSlack, "", "slack"}, {teamEmail, teamA, "email"}} {
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.notification_channels (id, team_id, name, kind, config) VALUES ($1, nullif($2, ''), $1, $3, '{}')`,
+			c.id, c.team, c.kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name, value, want string
+	}{
+		{"not an id", `"chan-1"`, "23514"},
+		{"a number", `42`, "23514"},
+		{"no such channel", `"nch_01JD3Z5Y8K2M4N6P8Q0R2S4TA9"`, "23503"},
+		{"a service-level slack channel", `"` + svcSlack + `"`, "23503"},
+		{"a team's email channel", `"` + teamEmail + `"`, "23503"},
+		{"a service-level email channel", `"` + svcEmail + `"`, ""},
+		{"cleared", `null`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := set(c.value)
+			if c.want == "" && err != nil {
+				t.Fatalf("want success, got %v", err)
+			}
+			if c.want != "" && sqlState(err) != c.want {
+				t.Fatalf("want %s, got %v", c.want, err)
+			}
+		})
+	}
+}

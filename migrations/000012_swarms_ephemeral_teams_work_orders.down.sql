@@ -230,6 +230,9 @@ ALTER TABLE afs.teams
   DROP COLUMN torn_down_at,
   DROP COLUMN teardown_rule;
 
+DROP TRIGGER service_settings_work_order_channel ON afs.service_settings;
+DROP FUNCTION afs.work_order_channel_guard();
 DELETE FROM afs.service_settings
-  WHERE key IN ('teams.ephemeral_max_days', 'work_orders.sla_warning_hours', 'billing.tag_activation_acknowledged');
+  WHERE key IN ('teams.ephemeral_max_days', 'work_orders.sla_warning_hours', 'billing.tag_activation_acknowledged',
+                'work_orders.notification_channel_id');
 ALTER TABLE afs.service_settings DROP CONSTRAINT service_settings_swarm_check;

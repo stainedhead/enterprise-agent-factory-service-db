@@ -53,13 +53,35 @@ ALTER TABLE afs.service_settings ADD CONSTRAINT service_settings_swarm_check
           OR (jsonb_typeof(value) = 'number' AND (value #>> '{}')::numeric BETWEEN 1 AND 365))
      AND (key <> 'work_orders.sla_warning_hours'
           OR (jsonb_typeof(value) = 'number' AND (value #>> '{}')::numeric BETWEEN 1 AND 720))
-     AND (key <> 'billing.tag_activation_acknowledged' OR jsonb_typeof(value) = 'boolean'));
+     AND (key <> 'billing.tag_activation_acknowledged' OR jsonb_typeof(value) = 'boolean')
+     AND (key <> 'work_orders.notification_channel_id'
+          OR jsonb_typeof(value) = 'null'
+          OR (jsonb_typeof(value) = 'string' AND afs.ulid_ok(value #>> '{}', 'nch'))));
 INSERT INTO afs.service_settings (key, value, description) VALUES
   ('teams.ephemeral_max_days', '90', 'Longest expiry an ephemeral team may have, in days from now.'),
   ('work_orders.sla_warning_hours', '48', 'Owning teams are warned this many hours before a work order''s SLA is due.'),
   ('billing.tag_activation_acknowledged', 'false',
-   'Set once a service admin has activated the AFS tag keys as cost allocation tags in AWS Billing.')
+   'Set once a service admin has activated the AFS tag keys as cost allocation tags in AWS Billing.'),
+  ('work_orders.notification_channel_id', 'null',
+   'Service-level email channel used to notify work order owners outside AFS. Null: outside contacts are not notified.')
 ON CONFLICT (key) DO NOTHING;
+
+-- The outside-contact channel must be an existing, service-level email channel (D22).
+CREATE FUNCTION afs.work_order_channel_guard() RETURNS trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog, afs AS $$
+BEGIN
+  IF NEW.key = 'work_orders.notification_channel_id' AND jsonb_typeof(NEW.value) = 'string'
+     AND afs.ulid_ok(NEW.value #>> '{}', 'nch')
+     AND NOT EXISTS (SELECT 1 FROM afs.notification_channels c
+                     WHERE c.id = NEW.value #>> '{}' AND c.team_id IS NULL AND c.kind = 'email') THEN
+    RAISE EXCEPTION 'work_orders.notification_channel_id must name a service-level email channel'
+      USING ERRCODE = 'foreign_key_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER service_settings_work_order_channel
+  BEFORE INSERT OR UPDATE ON afs.service_settings
+  FOR EACH ROW EXECUTE FUNCTION afs.work_order_channel_guard();
 
 -- 2. Ephemeral teams ------------------------------------------------------------------------------
 ALTER TABLE afs.teams
