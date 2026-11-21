@@ -33,6 +33,12 @@ of the `afs-migrate` command.
 | Test coverage | `migrate` 96.2%; `cmd/afs-migrate` 17.9% (R-6) |
 | Readability | Migration header explains each gap, its cause and its lock impact |
 
+### Goals and non-goals
+
+- **Goals:** fix R-1 (P1) and the quick P2 items before the branch merges; record any deferral.
+- **Non-goals:** new product behaviour; changes to merged migrations 000001–000014; load, latency and
+  restore proofs (M3, M4 with `-restapi`).
+
 ## 2. How to work these fixes
 
 - **TDD for every fix:** write the failing test first and check it fails for the right reason, make it
@@ -114,7 +120,22 @@ Acceptance criteria:
   command and an invalid step count against a fresh database and checks each result.
 - The test skips without the URL, like the other integration tests.
 
-## 4. Observations (no change in this repository)
+### Non-functional requirements for every fix
+
+| Area | Requirement |
+|---|---|
+| Quality | `make gate` and the integration tests green; `migrate` coverage stays ≥ 90% |
+| Online changes | Constraints `NOT VALID` then `VALIDATE`; lock impact stated in the 000015 header |
+| Reversibility | 000015 down restores the 000014 schema exactly (`pg_dump --schema-only` comparison) |
+| Security | No secret value column; no new grant beyond what a fix needs |
+| Observability | Errors keep their SQLSTATE and name the migration or option at fault |
+
+## 4. Dependencies
+
+- PostgreSQL 17 in CI (`postgres:17` service container); a local PostgreSQL for TDD.
+- No change is needed in `-restapi` for R-1 to R-6; the observations below are for it.
+
+## 5. Observations (no change in this repository)
 
 - Service-level notification channels can no longer hold a secret reference (000015). A service-level
   webhook with a credential would need a service-level secret design: a question for the root solution
@@ -127,8 +148,23 @@ Acceptance criteria:
 - Release: tag `v0.13.0` must be pushed by a maintainer after merge (tag pushes are blocked here).
 - Local integration runs used PostgreSQL 16; CI runs them on `postgres:17`.
 
-## 5. Open questions
+## 6. Open questions
 
 | Id | Question | Owner |
 |---|---|---|
 | RQ-1 | Should R-4 tighten the image check now (fixture churn across most tests) or in the next release? | db |
+
+## 7. Review record (dev-flow Step 6, `review-prd`)
+
+Verdict: **Ready for spec** after adding goals and non-goals, NFRs and dependencies.
+
+| Dimension | Status | Note |
+|---|---|---|
+| Problem clarity | Pass | Each finding names the file, the cause and the effect |
+| Scope definition | Pass | Goals and non-goals added |
+| Functional completeness | Pass | One requirement per finding, R-1 to R-6 |
+| NFR coverage | Pass | NFR table added (quality, online changes, reversibility, security, observability) |
+| Acceptance criteria | Pass | Testable, with the SQLSTATE or behaviour to assert |
+| Dependency identification | Pass | CI database, `-restapi` named |
+| Open questions | Pass | RQ-1 |
+| Review-PRD guidance | Pass | TDD, review per fix, teammates and worktrees in §2; no P0, R-1 is P1 because a public option silently or fatally misbehaves |
