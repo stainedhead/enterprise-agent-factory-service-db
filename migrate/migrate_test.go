@@ -1251,3 +1251,103 @@ func TestExternalTrafficReporting(t *testing.T) {
 		}
 	})
 }
+
+func TestIdentityProvidersAndTeamGuardrails(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	asApp := func(team string, sql string, args ...any) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			setup := `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + team + `'`
+			if team == "" {
+				setup = `SET LOCAL ROLE afs_app; SET LOCAL afs.service_admin = 'on'`
+			}
+			if _, err := tx.Exec(ctx, setup); err != nil {
+				return err
+			}
+			tag, err := tx.Exec(ctx, sql, args...)
+			if err == nil && tag.RowsAffected() == 0 {
+				return fmt.Errorf("no rows")
+			}
+			return err
+		})
+	}
+	const okta = "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T60"
+	const entraA = "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T61"
+	addIdP := func(caller, id string, team any, kind, issuer string, def bool) error {
+		return asApp(caller, `INSERT INTO afs.identity_providers (id, team_id, kind, name, issuer_url, client_id, is_default)
+			VALUES ($1, $2, $3, $3, $4, 'afs-console', $5)`, id, team, kind, issuer, def)
+	}
+
+	t.Run("service admins add providers; one default", func(t *testing.T) {
+		if err := addIdP("", okta, nil, "okta", "https://corp.okta.example", true); err != nil {
+			t.Fatal(err)
+		}
+		if err := addIdP("", entraA, teamA, "entra_id", "https://login.microsoftonline.example/tenant/v2.0", false); err != nil {
+			t.Fatal(err)
+		}
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T62", nil, "entra_id", "https://login.microsoftonline.example/other/v2.0", true); sqlState(err) != "23505" {
+			t.Errorf("second default: want 23505, got %v", err)
+		}
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T63", teamA, "okta", "https://team.okta.example", true); sqlState(err) != "23514" {
+			t.Errorf("team-level default: want 23514, got %v", err)
+		}
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T64", nil, "google", "https://accounts.google.example", false); sqlState(err) != "23514" {
+			t.Errorf("unsupported kind: want 23514, got %v", err)
+		}
+		if err := addIdP("", "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T65", nil, "okta", "http://insecure.okta.example", false); sqlState(err) != "23514" {
+			t.Errorf("http issuer: want 23514, got %v", err)
+		}
+	})
+	t.Run("team callers cannot add or change providers", func(t *testing.T) {
+		if err := addIdP(teamA, "idp_01JD3Z5Y8K2M4N6P8Q0R2S4T66", teamA, "okta", "https://rogue.okta.example", false); sqlState(err) != "42501" {
+			t.Errorf("team insert: want 42501, got %v", err)
+		}
+		if err := asApp(teamA, `UPDATE afs.identity_providers SET client_id = 'x' WHERE id = $1`, entraA); err == nil || err.Error() != "no rows" {
+			t.Errorf("team update: want no rows, got %v", err)
+		}
+		var n int
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.identity_providers`).Scan(&n)
+		}); err != nil || n != 1 {
+			t.Errorf("team B sees %d providers, want 1 (service level only); err %v", n, err)
+		}
+	})
+	t.Run("group bindings name a provider their team can use", func(t *testing.T) {
+		bind := func(id, team, idp string) error {
+			_, err := conn.Exec(ctx, `INSERT INTO afs.role_bindings (id, role, team_id, subject_type, group_name, identity_provider_id)
+				VALUES ($1, 'team_viewer', $2, 'group', 'grp-eng', $3)`, id, team, idp)
+			return err
+		}
+		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T60", teamA, entraA); err != nil {
+			t.Fatalf("own team's provider: %v", err)
+		}
+		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T61", teamB, entraA); sqlState(err) != "23503" {
+			t.Errorf("another team's provider: want 23503, got %v", err)
+		}
+		if err := bind("rb_01JD3Z5Y8K2M4N6P8Q0R2S4T62", teamB, okta); err != nil {
+			t.Errorf("service-level provider: %v", err)
+		}
+	})
+	t.Run("team admins set the account filter only when allowed", func(t *testing.T) {
+		set := `UPDATE afs.teams SET allowed_aws_accounts = '{payments-*}' WHERE id = $1`
+		if err := asApp(teamA, set, teamA); sqlState(err) != "42501" {
+			t.Fatalf("not allowed: want 42501, got %v", err)
+		}
+		if err := asApp(teamA, `UPDATE afs.teams SET may_manage_aws_accounts = true WHERE id = $1`, teamA); sqlState(err) != "42501" {
+			t.Fatalf("self-grant: want 42501, got %v", err)
+		}
+		if err := asApp("", `UPDATE afs.teams SET may_manage_aws_accounts = true WHERE id = $1`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		if err := asApp(teamA, set, teamA); err != nil {
+			t.Fatalf("allowed: %v", err)
+		}
+		if err := asApp(teamA, `UPDATE afs.teams SET may_add_external_systems = true WHERE id = $1`, teamA); sqlState(err) != "42501" {
+			t.Fatalf("external systems right is still service-admin only: got %v", err)
+		}
+	})
+}
