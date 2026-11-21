@@ -3,6 +3,7 @@ package migrate_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -300,8 +301,8 @@ func TestRowLevelSecurityIsolatesTeams(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO afs.team_egress_rules (id, team_id, host, purpose)
-			VALUES ('egr_01JD3Z5Y8K2M4N6P8Q0R2S4T6V', $1, 'github.com', 'git')`, teamB)
+		_, err = tx.Exec(ctx, `INSERT INTO afs.namespace_config_values (id, team_id, name, config_value)
+			VALUES ('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4T6V', $1, 'LOG_LEVEL', 'debug')`, teamB)
 		return err
 	})
 	if sqlState(err) != "42501" {
@@ -822,4 +823,219 @@ func TestCrossAccountRoleLinks(t *testing.T) {
 			t.Fatalf("team B sees %d team A links (err %v)", n, err)
 		}
 	})
+}
+
+func TestExternalSystems(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	exec := func(sql string, args ...any) error {
+		_, err := conn.Exec(ctx, sql, args...)
+		return err
+	}
+	// asApp runs fn as afs_app bound to one team (or as a service admin when team is "").
+	asApp := func(team string, fn func(tx pgx.Tx) error) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			setup := `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + team + `'`
+			if team == "" {
+				setup = `SET LOCAL ROLE afs_app; SET LOCAL afs.service_admin = 'on'`
+			}
+			if _, err := tx.Exec(ctx, setup); err != nil {
+				return err
+			}
+			return fn(tx)
+		})
+	}
+	const github = "ext_01JDX0000000000000000000A2"
+	const slack = "ext_01JDX0000000000000000000A7"
+	const openai = "ext_01JDX0000000000000000000A9"
+	access := func(agent string) map[string]string {
+		t.Helper()
+		rows, err := conn.Query(ctx, `SELECT slug, coalesce(disabled_at, 'on') FROM afs.agent_external_access WHERE agent_id = $1`, agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]string{}
+		for rows.Next() {
+			var k, v string
+			if err := rows.Scan(&k, &v); err != nil {
+				t.Fatal(err)
+			}
+			m[k] = v
+		}
+		return m
+	}
+
+	t.Run("built-in catalog is on by default except non-Bedrock model providers", func(t *testing.T) {
+		got := access(agentA1)
+		if len(got) != 10 {
+			t.Fatalf("agent sees %d systems, want 10: %v", len(got), got)
+		}
+		if got["github"] != "on" || got["atlassian"] != "on" || got["openai"] != "service" || got["openrouter"] != "service" {
+			t.Fatalf("defaults = %v", got)
+		}
+	})
+	t.Run("each level only narrows the one above", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.external_system_optouts (id, team_id, agent_id, system_id) VALUES
+			('xso_01JD3Z5Y8K2M4N6P8Q0R2S4T60', $1, NULL, $2),
+			('xso_01JD3Z5Y8K2M4N6P8Q0R2S4T61', $1, $3, $4)`, teamA, slack, agentA1, github); err != nil {
+			t.Fatal(err)
+		}
+		a1, a2 := access(agentA1), access(agentA2)
+		if a1["slack"] != "team" || a2["slack"] != "team" {
+			t.Errorf("team opt-out: a1=%s a2=%s", a1["slack"], a2["slack"])
+		}
+		if a1["github"] != "agent" || a2["github"] != "on" {
+			t.Errorf("agent opt-out: a1=%s a2=%s", a1["github"], a2["github"])
+		}
+		if err := exec(`UPDATE afs.external_systems SET enabled = false WHERE id = $1`, github); err != nil {
+			t.Fatal(err)
+		}
+		if got := access(agentA2)["github"]; got != "service" {
+			t.Errorf("service switch-off: a2=%s", got)
+		}
+		if err := exec(`INSERT INTO afs.external_system_optouts (id, team_id, agent_id, system_id) VALUES
+			('xso_01JD3Z5Y8K2M4N6P8Q0R2S4T62', $1, NULL, $2)`, teamA, slack); sqlState(err) != "23505" {
+			t.Errorf("duplicate team opt-out: want unique_violation, got %v", err)
+		}
+	})
+	t.Run("team-admins cannot change the service catalog", func(t *testing.T) {
+		err := asApp(teamA, func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `UPDATE afs.external_systems SET enabled = true WHERE id = $1`, openai)
+			if err == nil && tag.RowsAffected() == 0 {
+				return fmt.Errorf("no rows")
+			}
+			return err
+		})
+		if err == nil || err.Error() != "no rows" {
+			t.Errorf("team caller update of a service entry: %v", err)
+		}
+		err = asApp(teamA, func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `DELETE FROM afs.external_systems WHERE id = $1`, openai)
+			if err == nil && tag.RowsAffected() != 0 {
+				return fmt.Errorf("deleted")
+			}
+			return err
+		})
+		if err != nil {
+			t.Errorf("team caller delete of a service entry: %v", err)
+		}
+		if err := asApp("", func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE afs.external_systems SET enabled = true WHERE id = $1`, openai)
+			return err
+		}); err != nil {
+			t.Errorf("service admin enabling openai: %v", err)
+		}
+	})
+	t.Run("built-in entries cannot be deleted", func(t *testing.T) {
+		if err := exec(`DELETE FROM afs.external_systems WHERE id = $1`, slack); sqlState(err) != "55000" {
+			t.Fatalf("want 55000, got %v", err)
+		}
+	})
+	declare := func(id, team, slug string) error {
+		return asApp(team, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO afs.external_systems (id, team_id, slug, name, category, owner, purpose, endpoints)
+				VALUES ($1, $2, $3, 'PagerDuty', 'other', 'payments-sre', 'Incident paging', '{api.pagerduty.com,events.pagerduty.com:443}')`, id, team, slug)
+			return err
+		})
+	}
+	t.Run("teams declare their own systems only when allowed", func(t *testing.T) {
+		if err := declare("ext_01JD3Z5Y8K2M4N6P8Q0R2S4T60", teamA, "pagerduty"); sqlState(err) != "42501" {
+			t.Fatalf("not allowed: want 42501, got %v", err)
+		}
+		err := asApp(teamA, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE afs.teams SET may_add_external_systems = true WHERE id = $1`, teamA)
+			return err
+		})
+		if sqlState(err) != "42501" {
+			t.Fatalf("team-admin granting itself the right: want 42501, got %v", err)
+		}
+		if err := asApp("", func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE afs.teams SET may_add_external_systems = true WHERE id = $1`, teamA)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := declare("ext_01JD3Z5Y8K2M4N6P8Q0R2S4T60", teamA, "pagerduty"); err != nil {
+			t.Fatalf("allowed: %v", err)
+		}
+		if err := declare("ext_01JD3Z5Y8K2M4N6P8Q0R2S4T61", teamA, "github"); sqlState(err) != "23505" {
+			t.Errorf("shadowing a catalog slug: want 23505, got %v", err)
+		}
+		if got := access(agentA1)["pagerduty"]; got != "on" {
+			t.Errorf("team-declared system for agent: %s", got)
+		}
+		if err := exec(`INSERT INTO afs.external_systems (id, team_id, slug, name, category, endpoints)
+			VALUES ('ext_01JD3Z5Y8K2M4N6P8Q0R2S4T62', $1, 'datadog', 'Datadog', 'other', '{api.datadoghq.com}')`, teamA); sqlState(err) != "23514" {
+			t.Errorf("team entry without owner and purpose: want 23514, got %v", err)
+		}
+	})
+	t.Run("endpoints are validated", func(t *testing.T) {
+		for _, ep := range []string{`{}`, `{https://x.example.com}`, `{Example.com}`, `{x.example.com:70000}`, `{localhost}`, `{*.}`} {
+			err := exec(`INSERT INTO afs.external_systems (id, slug, name, category, endpoints)
+				VALUES ('ext_01JD3Z5Y8K2M4N6P8Q0R2S4T63', 'bad', 'Bad', 'other', $1)`, ep)
+			if sqlState(err) != "23514" {
+				t.Errorf("%s: want check_violation, got %v", ep, err)
+			}
+		}
+		if err := exec(`INSERT INTO afs.external_systems (id, slug, name, category, endpoints)
+			VALUES ('ext_01JD3Z5Y8K2M4N6P8Q0R2S4T63', 'internal-wiki', 'Wiki', 'other', '{wiki.corp.example:8443,*.corp.example}')`); err != nil {
+			t.Errorf("valid endpoints: %v", err)
+		}
+	})
+	t.Run("another team's systems are invisible and cannot be referenced", func(t *testing.T) {
+		var n int
+		if err := asApp(teamB, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.external_systems WHERE slug = 'pagerduty'`).Scan(&n)
+		}); err != nil || n != 0 {
+			t.Fatalf("team B sees %d team A systems (err %v)", n, err)
+		}
+		if err := exec(`INSERT INTO afs.external_system_optouts (id, team_id, system_id) VALUES
+			('xso_01JD3Z5Y8K2M4N6P8Q0R2S4T63', $1, 'ext_01JD3Z5Y8K2M4N6P8Q0R2S4T60')`, teamB); sqlState(err) != "23503" {
+			t.Errorf("opt-out of another team's system: want 23503, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.secrets (id, team_id, name, secrets_manager_arn, origin, external_system_id) VALUES
+			('sec_01JD3Z5Y8K2M4N6P8Q0R2S4T6Z', $1, 'pd-key', $2, 'managed', 'ext_01JD3Z5Y8K2M4N6P8Q0R2S4T60')`,
+			teamB, arnBase+"afs/afs-t-search/_shared/pd-key-AbCdEf"); sqlState(err) != "23503" {
+			t.Errorf("secret for another team's system: want 23503, got %v", err)
+		}
+	})
+}
+
+func TestEgressRulesBecomeTeamSystems(t *testing.T) {
+	conn := connect(t)
+	ctx := t.Context()
+	migs, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Up(ctx, conn, migs[:6]); err != nil {
+		t.Fatal(err)
+	}
+	seedTeams(t, conn)
+	if _, err := conn.Exec(ctx, `INSERT INTO afs.team_egress_rules (id, team_id, host, port, purpose) VALUES
+		('egr_01JD3Z5Y8K2M4N6P8Q0R2S4T60', $1, 'api.pagerduty.com', 443, 'paging'),
+		('egr_01JD3Z5Y8K2M4N6P8Q0R2S4T61', $1, 'nexus.corp.example', 8443, 'artifacts')`, teamA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Up(ctx, conn, migs); err != nil {
+		t.Fatal(err)
+	}
+	var eps []string
+	var may bool
+	if err := conn.QueryRow(ctx, `SELECT s.endpoints, t.may_add_external_systems FROM afs.external_systems s
+		JOIN afs.teams t ON t.id = s.team_id WHERE s.team_id = $1 AND s.slug = 'egress-allow-list'`, teamA).Scan(&eps, &may); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(eps) != "[api.pagerduty.com nexus.corp.example:8443]" || !may {
+		t.Fatalf("endpoints = %v, may add = %v", eps, may)
+	}
+	if _, err := migrate.Down(ctx, conn, migs, 1); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	var n int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM afs.team_egress_rules WHERE team_id = $1`, teamA).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("rules after down = %d (err %v)", n, err)
+	}
 }
