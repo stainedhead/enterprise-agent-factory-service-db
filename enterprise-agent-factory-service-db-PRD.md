@@ -640,7 +640,7 @@ nothing`, `only the API and reconciler may call it` (gateway `42501`).
 | Connections | Per-service connection limits (`ALTER ROLE … CONNECTION LIMIT` on the LOGIN users, set by operators): `afs-api` 100, `afs-gateway` 100, `afs-reconciler` 20, `afs-billing` 10, `afs-migrate` 2, `afs_readonly` users 10 (working values, confirmed by the M3 load test, DB-OQ-3); their sum stays below 80% of `max_connections` of the reference instance |
 | Observability | `pg_stat_statements` on; `log_min_duration_statement` 500 ms (parameter group, `-restapi` Terraform); `afs-migrate version` reports the applied version; `migrate` sets `lock_timeout` in each migration transaction (default 10 s, `WithLockTimeout`, `afs-migrate --lock-timeout`) so a blocked DDL fails with `55P03` instead of queueing traffic behind it (`TestLockTimeoutStopsBlockedMigration`) |
 | Security | No secret values; least-privilege grants per role, column grants where a role updates part of a row; audit append-only by trigger; RLS backs the API's checks |
-| Quality | `migrate` ≥ 90% coverage (96.2% at 000015, `make cover` with `AFS_TEST_DATABASE_URL`); every constraint has a rejected-case test; every RLS policy has an isolation test (`TestCrossTeamWritesChangeNothing`) |
+| Quality | `migrate` ≥ 90% coverage (96.5% at 000015, `make cover` with `AFS_TEST_DATABASE_URL`); every constraint has a rejected-case test; every RLS policy has an isolation test (`TestCrossTeamWritesChangeNothing`) |
 
 ## 7. Delivery
 

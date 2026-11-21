@@ -26,4 +26,4 @@ Integration tests need `AFS_TEST_DATABASE_URL` and create one database per test.
 (`TestCrossTeamWritesChangeNothing`, `TestEveryRevisionTableAnnouncesChanges`,
 `TestEveryTeamTableHasRowLevelSecurity`, `TestEveryViewIsSecurityInvoker`) discover tables from
 `pg_class`, `pg_policies` and `pg_trigger`, so a new table is covered, or fails until the shared fixture
-`seedOtherTeams` gives it rows. `migrate` coverage: 96.2% (`make cover` with the database URL set).
+`seedOtherTeams` gives it rows. `migrate` coverage: 96.5% (`cmd/afs-migrate` 82.1%) (`make cover` with the database URL set).
