@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Draft for review, feature-complete scope, schema 000013 (2026-11-21) |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
-| **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-18) |
+| **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-24) |
 | **Provides** | [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
 | **Consumes** | No service at runtime. The schema relies on jobs and infrastructure owned elsewhere (§10) |
 | **Dictionary** | [docs/data-model.md](docs/data-model.md) |
@@ -543,4 +543,4 @@ Proven by: design review (nothing to test; a future table would need a PRD chang
 | Load test | `-restapi` | Concurrent `reserve_spend` bound, p99, RLS overhead | — | M3 |
 | CI | This repository | `postgres:17` service container for `make test-db` | Every PR | M0 |
 | Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
-| Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D46, recorded in root PRD §10.1; the ADR entry is still to be added to the root ADR log) | Scope and the 000013 behaviour | — | — |
+| Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D56, recorded in root PRD §10.1; ADR-015 in the root ADR log) | Scope and the 000013 behaviour | — | — |
