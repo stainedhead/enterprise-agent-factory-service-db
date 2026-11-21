@@ -18,7 +18,7 @@ erDiagram
     agents ||--o{ agent_volume_snapshots : ""
     agents ||--o{ agent_config_values : ""
     agents ||--o{ agent_role_links : ""
-    linked_aws_accounts ||--o{ agent_role_links : ""
+    org_aws_accounts ||--o{ agent_role_links : ""
     teams ||--o{ namespace_config_values : ""
     storage_classes ||--o{ agents : ""
     secrets ||--o{ agent_secret_bindings : ""
@@ -43,7 +43,7 @@ erDiagram
 |---|---|---|
 | `service_settings` | Service-wide settings (key → JSON) | Service admins only |
 | `users` | People, provisioned just-in-time from OIDC | Unique `(oidc_issuer, oidc_subject)`, unique `lower(email)` |
-| `teams` | A software factory; one namespace | `slug` fixes `namespace = afs-t-<slug>`; `kind` persistent/ephemeral (ephemeral requires `expires_at`); `max_budget_usd` ceiling; `state` active/suspended/deleting/deleted |
+| `teams` | A software factory; one namespace | `slug` fixes `namespace = afs-t-<slug>`; `kind` persistent/ephemeral (ephemeral requires `expires_at`); `max_budget_usd` ceiling; `state` active/suspended/deleting/deleted; `allowed_aws_accounts` glob patterns over organization account ids and names (`*` = all) that bound cross-account role links, set by service admins |
 | `role_bindings` | Who holds which role where | `service_admin` ⇔ `team_id IS NULL`; subject is a user or an IdP group |
 | `api_keys` | Team-scoped keys for pipelines | SHA-256 only, shown once, `expires_at ≤ created_at + 90 days` |
 | `models` | Bedrock models in the catalog | `id` is the Bedrock model id |
@@ -54,9 +54,8 @@ erDiagram
 | `namespace_config_values` | Non-secret configuration values for a team's namespace, set by team-admins | `UPPER_SNAKE` names, credential-like names rejected; cannot be deleted or renamed while an agent links to it |
 | `agent_config_values` | An agent's configuration values | `source` literal (own value) or namespace (link to the namespace value of the same name, which must exist); names cannot clash with the agent's secret env vars; replaces the old `agents.env` |
 | `agent_config_resolved` (view) | Effective value per agent entry and where it came from | `security_invoker`, so RLS applies |
-| `linked_aws_accounts` | AWS accounts in the organization that agents may assume roles in (service-admin registry) | 12-digit id; `available_to` all_teams or listed_teams; `enabled` |
-| `linked_aws_account_teams` | Teams allowed to link to a listed_teams account | RLS by team |
-| `agent_role_links` | Roles in linked accounts an agent may assume | Agent must have `iam_identity = 'dedicated'`; account enabled and available to the team; role ARN must be in that account; AFS-generated unique `external_id`; `status` pending_trust/verified/failed/disabled written by the reconciler; role and external ID immutable |
+| `org_aws_accounts` | Mirror of the AWS Organizations account list (reconciler-written) | Used to resolve account names and refuse suspended accounts |
+| `agent_role_links` | Roles in linked accounts an agent may assume | Agent must have `iam_identity = 'dedicated'`; account active and allowed by the team's filter (`afs.account_allowed`); role ARN must be in that account; AFS-generated unique `external_id`; `status` pending_trust/verified/failed/disabled written by the reconciler; role and external ID immutable |
 | `storage_classes` | Storage classes a service admin offers for agent volumes | EBS `gp3` or `io2`; seeded with `gp3` |
 | `agent_volume_snapshots` | EBS snapshot history per agent volume | Reconciler-written; `afs_app` may only insert `manual` requests for its own team; rows kept as history; referenced by export bundles |
 | `agent_secret_bindings` | How a secret reaches an agent | env var or file target; composite FKs keep agent and secret in the same team; an agent secret binds only to its own agent (trigger) |

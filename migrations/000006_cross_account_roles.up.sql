@@ -2,8 +2,8 @@
 --
 -- An agent can run with its own IAM role (Pod Identity) instead of the team's shared role. An agent
 -- with its own role can be linked to roles in other AWS accounts of the organization that it may
--- assume. Service admins register which accounts can be linked (and optionally which teams may link
--- to each). Each link carries an external ID that AFS generates and the target account owner puts in
+-- assume. Each team has an allowed-accounts filter (glob patterns over organization account ids and
+-- names, '*' for all), and links must fall inside it. Each link carries an external ID that AFS generates and the target account owner puts in
 -- the role's trust policy. The reconciler grants sts:AssumeRole on the target, writes the agent's AWS
 -- config profile, verifies the link by assuming the role, and records the result.
 --
@@ -20,34 +20,48 @@ ALTER TABLE afs.agents
 COMMENT ON COLUMN afs.agents.iam_identity IS
   'team_shared: Pod Identity maps the agent to the team role. dedicated: the agent gets its own role (required for cross-account links).';
 
--- 2. Accounts that can be linked -----------------------------------------------------------------
-CREATE TABLE afs.linked_aws_accounts (
-  id            text PRIMARY KEY CHECK (id ~ '^[0-9]{12}$'),  -- the AWS account id
-  display_name  text NOT NULL CHECK (length(display_name) BETWEEN 1 AND 120),
-  description   text NOT NULL DEFAULT '',
-  -- all_teams: any team may link roles here. listed_teams: only teams in linked_aws_account_teams.
-  available_to  text NOT NULL DEFAULT 'listed_teams' CHECK (available_to IN ('all_teams', 'listed_teams')),
-  enabled       boolean NOT NULL DEFAULT true,
-  version       bigint NOT NULL DEFAULT 1,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  created_by    text NOT NULL DEFAULT afs.current_actor(),
-  updated_at    timestamptz NOT NULL DEFAULT now()
+-- 2. Organization accounts and the per-team account filter ---------------------------------------
+-- A mirror of the AWS Organizations account list, refreshed by the reconciler, so names can be
+-- resolved to ids and suspended accounts refused.
+CREATE TABLE afs.org_aws_accounts (
+  id         text PRIMARY KEY CHECK (id ~ '^[0-9]{12}$'),
+  name       text NOT NULL,
+  status     text NOT NULL CHECK (status IN ('active', 'suspended', 'pending_closure')),
+  synced_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE afs.linked_aws_account_teams (
-  account_id text NOT NULL REFERENCES afs.linked_aws_accounts (id) ON DELETE CASCADE,
-  team_id    text NOT NULL REFERENCES afs.teams (id) ON DELETE CASCADE,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  created_by text NOT NULL DEFAULT afs.current_actor(),
-  PRIMARY KEY (account_id, team_id)
-);
+-- Which organization accounts a team's agents may assume roles in, as glob patterns over account
+-- ids and names: '*' for every account, '444455556666' for one, 'payments-*' for a group by name.
+-- Empty means none. Set by service admins (enforced by the API); team-admins read it.
+-- IAM matches with wildcards, not regular expressions, so the patterns are globs (* and ?).
+ALTER TABLE afs.teams
+  ADD COLUMN allowed_aws_accounts text[] NOT NULL DEFAULT '{}'
+    CONSTRAINT teams_allowed_aws_accounts_check
+    CHECK (array_position(allowed_aws_accounts, NULL) IS NULL
+           AND cardinality(allowed_aws_accounts) <= 50);
+
+CREATE FUNCTION afs.glob_like(p_glob text) RETURNS text
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE
+  RETURN replace(replace(replace(replace(replace(p_glob, '\', '\\'), '%', '\%'), '_', '\_'), '*', '%'), '?', '_');
+
+-- True when the account is active in the organization and matches one of the team's patterns.
+CREATE FUNCTION afs.account_allowed(p_team_id text, p_account_id text) RETURNS boolean
+  LANGUAGE sql STABLE
+  SET search_path = pg_catalog, afs
+  RETURN EXISTS (
+    SELECT 1
+    FROM afs.teams t
+    JOIN afs.org_aws_accounts a ON a.id = p_account_id AND a.status = 'active'
+    CROSS JOIN LATERAL unnest(t.allowed_aws_accounts) AS pat
+    WHERE t.id = p_team_id
+      AND (a.id LIKE afs.glob_like(pat) OR a.name LIKE afs.glob_like(pat)));
 
 -- 3. Cross-account role links per agent ----------------------------------------------------------
 CREATE TABLE afs.agent_role_links (
   id                  text PRIMARY KEY CHECK (afs.ulid_ok(id, 'arl')),
   team_id             text NOT NULL,
   agent_id            text NOT NULL,
-  account_id          text NOT NULL REFERENCES afs.linked_aws_accounts (id) ON DELETE RESTRICT,
+  account_id          text NOT NULL REFERENCES afs.org_aws_accounts (id) ON DELETE RESTRICT,
   role_arn            text NOT NULL CHECK (role_arn ~ '^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
                                              AND length(role_arn) <= 600),
   -- AWS config profile name the agent uses, e.g. aws --profile prod-deployer.
@@ -56,7 +70,8 @@ CREATE TABLE afs.agent_role_links (
   -- external IDs are confused-deputy guards, not credentials) but unique per link.
   external_id         text NOT NULL UNIQUE CHECK (external_id ~ '^afs-[A-Za-z0-9]{20,64}$'),
   max_session_seconds integer NOT NULL DEFAULT 3600 CHECK (max_session_seconds BETWEEN 900 AND 43200),
-  -- pending_trust: waiting for the target account to trust the agent's role.
+  -- pending_trust: waiting for the target account to trust the agent's role. disabled: the team's
+  -- account filter no longer allows the account, or a team-admin turned it off.
   status              text NOT NULL DEFAULT 'pending_trust'
                         CHECK (status IN ('pending_trust', 'verified', 'failed', 'disabled')),
   last_verified_at    timestamptz,
@@ -81,13 +96,8 @@ BEGIN
     RAISE EXCEPTION 'agent % needs its own IAM role before it can assume roles in other accounts', NEW.agent_id
       USING ERRCODE = 'check_violation';
   END IF;
-  IF NOT EXISTS (
-       SELECT 1 FROM afs.linked_aws_accounts a
-       WHERE a.id = NEW.account_id AND a.enabled
-         AND (a.available_to = 'all_teams'
-              OR EXISTS (SELECT 1 FROM afs.linked_aws_account_teams t
-                         WHERE t.account_id = a.id AND t.team_id = NEW.team_id))) THEN
-    RAISE EXCEPTION 'account % is not enabled for linking by this team', NEW.account_id
+  IF NOT afs.account_allowed(NEW.team_id, NEW.account_id) THEN
+    RAISE EXCEPTION 'account % is not in this team''s allowed accounts', NEW.account_id
       USING ERRCODE = 'check_violation';
   END IF;
   IF TG_OP = 'UPDATE' AND (NEW.role_arn IS DISTINCT FROM OLD.role_arn
@@ -122,28 +132,24 @@ CREATE TRIGGER agents_identity_guard BEFORE UPDATE OF iam_identity ON afs.agents
   FOR EACH ROW EXECUTE FUNCTION afs.agent_identity_guard();
 
 -- 5. Versioning, revisions, privileges, row-level security ---------------------------------------
-CREATE TRIGGER linked_aws_accounts_touch BEFORE UPDATE ON afs.linked_aws_accounts
-  FOR EACH ROW EXECUTE FUNCTION afs.touch_row();
-CREATE TRIGGER linked_aws_accounts_revision AFTER INSERT OR UPDATE OR DELETE ON afs.linked_aws_accounts
-  FOR EACH ROW EXECUTE FUNCTION afs.record_revision();
 CREATE TRIGGER agent_role_links_touch BEFORE UPDATE ON afs.agent_role_links
   FOR EACH ROW EXECUTE FUNCTION afs.touch_row();
 CREATE TRIGGER agent_role_links_revision AFTER INSERT OR UPDATE OR DELETE ON afs.agent_role_links
   FOR EACH ROW EXECUTE FUNCTION afs.record_revision();
 
--- The registry is written by service admins (enforced by the API) and readable by every team role,
--- so team-admins can pick an account.
-GRANT SELECT, INSERT, UPDATE, DELETE ON afs.linked_aws_accounts, afs.linked_aws_account_teams,
-  afs.agent_role_links TO afs_app;
-GRANT SELECT ON afs.linked_aws_accounts, afs.linked_aws_account_teams, afs.agent_role_links
-  TO afs_reconciler, afs_readonly;
+-- The organization mirror is written by the reconciler and readable by every team role, so
+-- team-admins can pick an account. afs.teams.allowed_aws_accounts is covered by the existing grants.
+GRANT SELECT ON afs.org_aws_accounts TO afs_app, afs_readonly;
+GRANT SELECT, INSERT, UPDATE, DELETE ON afs.org_aws_accounts TO afs_reconciler;
+GRANT SELECT, INSERT, UPDATE, DELETE ON afs.agent_role_links TO afs_app;
+GRANT SELECT ON afs.agent_role_links TO afs_reconciler, afs_readonly;
 GRANT UPDATE (status, last_verified_at, last_error) ON afs.agent_role_links TO afs_reconciler;
 
 DO $$
 DECLARE
   t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['linked_aws_account_teams', 'agent_role_links']
+  FOREACH t IN ARRAY ARRAY['agent_role_links']
   LOOP
     EXECUTE format('ALTER TABLE afs.%I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('CREATE POLICY app_team_scope ON afs.%I TO afs_app USING (afs.caller_sees_team(team_id)) WITH CHECK (afs.caller_sees_team(team_id))', t);

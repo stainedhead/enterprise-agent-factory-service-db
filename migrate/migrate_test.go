@@ -720,16 +720,15 @@ func TestCrossAccountRoleLinks(t *testing.T) {
 		_, err := conn.Exec(ctx, sql, args...)
 		return err
 	}
-	if err := exec(`INSERT INTO afs.linked_aws_accounts (id, display_name, available_to) VALUES
-		('222233334444', 'payments-prod', 'listed_teams'),
-		('555566667777', 'shared-tools', 'all_teams'),
-		('888899990000', 'retired', 'all_teams')`); err != nil {
+	if err := exec(`INSERT INTO afs.org_aws_accounts (id, name, status) VALUES
+		('222233334444', 'payments-prod', 'active'),
+		('555566667777', 'shared-tools', 'active'),
+		('888899990000', 'payments-legacy', 'suspended'),
+		('123412341234', 'search-prod', 'active')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := exec(`UPDATE afs.linked_aws_accounts SET enabled = false WHERE id = '888899990000'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := exec(`INSERT INTO afs.linked_aws_account_teams (account_id, team_id) VALUES ('222233334444', $1)`, teamA); err != nil {
+	// Team A: everything named payments-* plus one account by id. Team B: nothing.
+	if err := exec(`UPDATE afs.teams SET allowed_aws_accounts = '{payments-*,555566667777}' WHERE id = $1`, teamA); err != nil {
 		t.Fatal(err)
 	}
 	link := func(id, agentID, account, role, profile, ext string) error {
@@ -759,27 +758,37 @@ func TestCrossAccountRoleLinks(t *testing.T) {
 			t.Fatalf("status = %q, err %v", st, err)
 		}
 	})
-	t.Run("unregistered, disabled or unlisted accounts rejected", func(t *testing.T) {
-		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T63", agentA1, "111111111111", "arn:aws:iam::111111111111:role/x", "x", ext+"3"); sqlState(err) != "23514" {
-			t.Errorf("unregistered: want check_violation, got %v", err)
+	t.Run("accounts outside the filter, suspended or unknown are rejected", func(t *testing.T) {
+		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T63", agentA1, "123412341234", "arn:aws:iam::123412341234:role/x", "x", ext+"3"); sqlState(err) != "23514" {
+			t.Errorf("outside filter: want check_violation, got %v", err)
 		}
 		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T64", agentA1, "888899990000", "arn:aws:iam::888899990000:role/x", "y", ext+"4"); sqlState(err) != "23514" {
-			t.Errorf("disabled: want check_violation, got %v", err)
+			t.Errorf("suspended: want check_violation, got %v", err)
 		}
-		if err := exec(`UPDATE afs.agents SET iam_identity = 'dedicated' WHERE team_id = $1`, teamA); err != nil {
+		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T65", agentA1, "111111111111", "arn:aws:iam::111111111111:role/x", "z", ext+"5"); sqlState(err) != "23514" {
+			t.Errorf("unknown: want check_violation, got %v", err)
+		}
+	})
+	t.Run("star allows every active account", func(t *testing.T) {
+		var a, b, c bool
+		if err := exec(`UPDATE afs.teams SET allowed_aws_accounts = '{*}' WHERE id = $1`, teamB); err != nil {
 			t.Fatal(err)
 		}
-		_, err := conn.Exec(ctx, `INSERT INTO afs.models (id, provider, display_name) VALUES ('m2', 'x', 'x');
-			INSERT INTO afs.team_models (team_id, model_id) VALUES ('`+teamB+`', 'm2');
-			INSERT INTO afs.agents (id, team_id, name, template, image, model_id, iam_identity)
-			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', '`+teamB+`', 'b-agent', 't', 'x@sha256:a', 'm2', 'dedicated')`)
-		if err != nil {
+		if err := conn.QueryRow(ctx, `SELECT afs.account_allowed($1, '123412341234'), afs.account_allowed($1, '888899990000'), afs.account_allowed($2, '123412341234')`,
+			teamB, teamA).Scan(&a, &b, &c); err != nil {
 			t.Fatal(err)
 		}
-		err = exec(`INSERT INTO afs.agent_role_links (id, team_id, agent_id, account_id, role_arn, profile_name, external_id)
-			VALUES ('arl_01JD3Z5Y8K2M4N6P8Q0R2S4T65', $1, 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', '222233334444', 'arn:aws:iam::222233334444:role/x', 'z', $2)`, teamB, ext+"5")
-		if sqlState(err) != "23514" {
-			t.Errorf("team not listed: want check_violation, got %v", err)
+		if !a || b || c {
+			t.Fatalf("allowed = %v (B, active), %v (B, suspended), %v (A, outside filter)", a, b, c)
+		}
+	})
+	t.Run("glob characters are not SQL wildcards", func(t *testing.T) {
+		var ok bool
+		if err := exec(`UPDATE afs.teams SET allowed_aws_accounts = '{payments_prod}' WHERE id = $1`, teamB); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.QueryRow(ctx, `SELECT afs.account_allowed($1, '222233334444')`, teamB).Scan(&ok); err != nil || ok {
+			t.Fatalf("'_' matched '-' (ok=%v, err %v)", ok, err)
 		}
 	})
 	t.Run("role ARN must be in the linked account", func(t *testing.T) {
