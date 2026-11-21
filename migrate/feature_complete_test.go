@@ -36,7 +36,7 @@ INSERT INTO afs.budgets (id, team_id, period, amount_usd) VALUES ('bud_01JD3Z5Y8
 INSERT INTO afs.spend_counters (budget_id, period_start, limit_usd) VALUES ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4TB2', '2026-11-01', 100);
 INSERT INTO afs.budget_threshold_events (budget_id, period_start, threshold) VALUES ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4TB2', '2026-11-01', 50);
 INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES
- ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', '`+teamB+`', 'indexer', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet');
+ ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', '`+teamB+`', 'indexer', 'omp', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet');
 INSERT INTO afs.secrets (id, team_id, name, secrets_manager_arn, origin) VALUES
  ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4TB4', '`+teamB+`', 'log-token', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-search/_shared/log-token-AbCdEf', 'managed');
 INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'sec_01JD3Z5Y8K2M4N6P8Q0R2S4TB4', 'env', 'LOG_TOKEN');
@@ -71,8 +71,8 @@ INSERT INTO afs.outbox_events (event_type, aggregate_kind, aggregate_id, team_id
 INSERT INTO afs.audit_log (actor_type, actor_id, action, outcome, team_id) VALUES ('user', 'usr_b', 'CreateAgent', 'allowed', '`+teamB+`');
 INSERT INTO afs.swarm_stages (id, team_id, name, position) VALUES ('stg_01JD3Z5Y8K2M4N6P8Q0R2S4TBG', '`+swarmB+`', 'scan', 1);
 INSERT INTO afs.agent_pools (id, team_id, name, template, image, model_id, workers) VALUES
- ('pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', '`+swarmB+`', 'scanner', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet', 2),
- ('pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ', '`+swarmB+`', 'fixer', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet', 2);
+ ('pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', '`+swarmB+`', 'scanner', 'omp', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 2),
+ ('pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ', '`+swarmB+`', 'fixer', 'omp', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 2);
 INSERT INTO afs.pool_handoffs (team_id, from_pool_id, to_pool_id) VALUES ('`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ');
 INSERT INTO afs.secrets (id, team_id, pool_id, name, secrets_manager_arn, origin) VALUES ('sec_01JD3Z5Y8K2M4N6P8Q0R2S4TBK', '`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ', 'gh-token',
  'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-swarm-b/fixer/gh-token-AbCdEf', 'managed');
@@ -178,7 +178,7 @@ func TestCrossTeamWritesChangeNothing(t *testing.T) {
 			if tb.scopedOnly {
 				err := asTeamA(t, conn, func(tx pgx.Tx) error {
 					var n int
-					if err := tx.QueryRow(ctx, strings.Replace(others, "count(*)", "count(*)", 1)).Scan(&n); err != nil {
+					if err := tx.QueryRow(ctx, others).Scan(&n); err != nil {
 						return err
 					}
 					if n != 0 {
@@ -498,7 +498,7 @@ func TestPendingGuards(t *testing.T) {
 				INSERT INTO afs.budgets (id, team_id, period, amount_usd) VALUES ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4TD2', '`+swarmC+`', 'lifetime', 50);
 				INSERT INTO afs.team_models (team_id, model_id) VALUES ('`+swarmC+`', 'claude-sonnet');
 				INSERT INTO afs.agent_pools (id, team_id, name, template, image, model_id, workers)
-				VALUES ('pool_01JD3Z5Y8K2M4N6P8Q0R2S4TD3', '`+swarmC+`', 'other', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet', 1)`)
+				VALUES ('pool_01JD3Z5Y8K2M4N6P8Q0R2S4TD3', '`+swarmC+`', 'other', 'omp', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 1)`)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -564,14 +564,21 @@ func TestPendingGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("an unpinned image is refused", func(t *testing.T) {
-		for _, img := range []string{"ghcr.io/x/omp:latest", "ghcr.io/x/omp"} {
+	t.Run("an image is pinned to a full digest", func(t *testing.T) {
+		for _, img := range []string{"ghcr.io/x/omp:latest", "ghcr.io/x/omp", "ghcr.io/x/omp@sha256:abc",
+			"ghcr.io/x/omp@sha256:" + strings.Repeat("A", 64), "ghcr.io/x/omp@sha256:" + strings.Repeat("a", 64) + ":v1"} {
 			if err := exec(`INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4TD4', $1, 'loose', 'omp', $2, 'claude-sonnet')`, teamB, img); sqlState(err) != "23514" {
 				t.Errorf("%s: want 23514, got %v", img, err)
 			}
 			if err := exec(`UPDATE afs.agents SET image = $1 WHERE id = $2`, img, agentB); sqlState(err) != "23514" {
 				t.Errorf("update to %s: want 23514, got %v", img, err)
 			}
+			if err := exec(`UPDATE afs.agent_pools SET image = $1 WHERE id = $2`, img, poolFixB); sqlState(err) != "23514" {
+				t.Errorf("pool image %s: want 23514, got %v", img, err)
+			}
+		}
+		if err := exec(`UPDATE afs.agents SET image = $1 WHERE id = $2`, "ghcr.io/x/omp:v2@sha256:"+strings.Repeat("b", 64), agentB); err != nil {
+			t.Errorf("tag plus full digest: %v", err)
 		}
 	})
 
@@ -599,6 +606,15 @@ func TestPendingGuards(t *testing.T) {
 		}
 		if s := recon("2026-11-04", 5, 0, "ok"); s != "missing_billing" {
 			t.Errorf("nothing billed: %s, want missing_billing", s)
+		}
+		for i, amounts := range [][2]float64{{-1, 100}, {100, -1}} {
+			if err := exec(`INSERT INTO afs.cost_reconciliations (team_id, day, gateway_usd, billed_usd, status) VALUES ($1, $2, $3, $4, 'ok')`,
+				teamB, fmt.Sprintf("2026-11-%02d", 10+i), amounts[0], amounts[1]); sqlState(err) != "23514" {
+				t.Errorf("negative amount %v: want 23514, got %v", amounts, err)
+			}
+		}
+		if err := exec(`UPDATE afs.cost_reconciliations SET billed_usd = -5 WHERE team_id = $1 AND day = '2026-11-01'`, teamB); sqlState(err) != "23514" {
+			t.Errorf("update to a negative bill: want 23514, got %v", err)
 		}
 		if err := exec(`UPDATE afs.service_settings SET value = '10' WHERE key = 'billing.variance_alert_pct'`); err != nil {
 			t.Fatal(err)

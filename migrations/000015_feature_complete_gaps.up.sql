@@ -9,16 +9,21 @@
 -- 3. cost_reconciliations.status is derived (DB-US-26): 'over_threshold' when the gateway estimate is
 --    more than service setting billing.variance_alert_pct away from the billed cost, 'missing_billing'
 --    when nothing was billed for a day the gateway metered, else 'ok'. The value the billing job writes
---    is replaced at insert and update; rows written earlier keep their status.
+--    is replaced at insert and update; rows written earlier keep their status. Both amounts must be
+--    zero or more (23514), or the variance means nothing.
 -- 4. api_keys.created_at is the real creation time (DB-US-27). The 90-day expiry CHECK compares
 --    expires_at with created_at, which a caller could set, so a key could live for years. created_at is
 --    now set to now() on insert and cannot change on update (55000).
+-- 5. Agent and pool images end in a full digest, @sha256:<64 lowercase hex> (DB-US-22). The 000001 and
+--    000012 checks only asked for '@sha256:' somewhere in the image, so '@sha256:abc' passed; the
+--    template guard (000014) checks the full digest only for rows with a template. Rows that do not
+--    match must be corrected before this migration (none exist before the first release).
 --
--- Lock impact: notification_channels and api_keys take a brief ACCESS EXCLUSIVE lock for ADD CONSTRAINT
--- NOT VALID and CREATE TRIGGER (SHARE ROW EXCLUSIVE); the VALIDATE that follows holds SHARE UPDATE
--- EXCLUSIVE, which does not block writes. cost_reconciliations takes SHARE ROW EXCLUSIVE for its
--- trigger. The view is replaced in place (ACCESS EXCLUSIVE on the view only). All four tables are small
--- configuration or per-team-day tables; nothing is rewritten.
+-- Lock impact: notification_channels, cost_reconciliations, agents and agent_pools take a brief ACCESS
+-- EXCLUSIVE lock for ADD CONSTRAINT ... NOT VALID; each VALIDATE that follows scans its table once under
+-- SHARE UPDATE EXCLUSIVE, which does not block writes. cost_reconciliations and api_keys take SHARE ROW
+-- EXCLUSIVE for CREATE TRIGGER. The view is replaced in place (ACCESS EXCLUSIVE on the view only).
+-- Nothing is rewritten.
 
 -- 1. Service-level channels -----------------------------------------------------------------------
 ALTER TABLE afs.notification_channels
@@ -45,6 +50,10 @@ FROM (
 WHERE d.reason IS NOT NULL;
 
 -- 3. Reconciliation status ------------------------------------------------------------------------
+ALTER TABLE afs.cost_reconciliations
+  ADD CONSTRAINT cost_reconciliations_amounts_check CHECK (gateway_usd >= 0 AND billed_usd >= 0) NOT VALID;
+ALTER TABLE afs.cost_reconciliations VALIDATE CONSTRAINT cost_reconciliations_amounts_check;
+
 -- SECURITY DEFINER so afs_billing need not read service_settings; it reads one documented key.
 CREATE FUNCTION afs.cost_reconciliation_status() RETURNS trigger
   LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, afs AS $$
@@ -76,3 +85,11 @@ BEGIN
 END $$;
 CREATE TRIGGER api_keys_created_at_guard BEFORE INSERT OR UPDATE OF created_at ON afs.api_keys
   FOR EACH ROW EXECUTE FUNCTION afs.api_key_created_at_guard();
+
+-- 5. Image digests --------------------------------------------------------------------------------
+ALTER TABLE afs.agents
+  ADD CONSTRAINT agents_image_digest_check CHECK (image ~ '@sha256:[0-9a-f]{64}$') NOT VALID;
+ALTER TABLE afs.agents VALIDATE CONSTRAINT agents_image_digest_check;
+ALTER TABLE afs.agent_pools
+  ADD CONSTRAINT agent_pools_image_digest_check CHECK (image ~ '@sha256:[0-9a-f]{64}$') NOT VALID;
+ALTER TABLE afs.agent_pools VALIDATE CONSTRAINT agent_pools_image_digest_check;

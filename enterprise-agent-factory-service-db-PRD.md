@@ -87,7 +87,7 @@ gaps the 000015 proofs revealed.
 | DB-35 Agent template catalog | AGT-2, AGT-11, D54 | `agent_templates` (allowed and current image digests, `enabled`; service-admin writes, `agent_templates_notify`), `agents.template_id` and `agent_pools.template_id`, `afs.image_digests_ok`, `afs.template_use_guard` (`agents_template_guard`, `agent_pools_template_guard`); the free-text `template` columns stay | ✓ |
 | DB-36 Export and import transport | CFG-5, D49 | `export_bundles`: nullable `s3_uri` and `sha256`, `download_url`, `download_expires_at`, `size_bytes`, `export_bundles_succeeded_check`, `export_bundles_export_succeeded_check`, reconciler column grants | ✓ |
 | DB-37 Repository owner resolution | WO-1, D38 | `afs.resolve_repo_owners(host, repo)` (000014, `SECURITY DEFINER`, executable by `afs_app` and `afs_reconciler` only), reading namespace config value `AFS_OWNED_REPOS` | ✓ |
-| DB-38 Gaps closed by proof | SEC-1, BUD-6, TEAM-7, ACC-4 | 000015: `notification_channels_service_no_secret`, `teams_due_for_teardown` lists only teams due, `cost_reconciliation_status` (derived `status`), `api_key_created_at_guard`; `migrate` sets `lock_timeout` per migration (`DefaultLockTimeout`, `WithLockTimeout`, `afs-migrate --lock-timeout`) | ✓ |
+| DB-38 Gaps closed by proof | SEC-1, BUD-6, TEAM-7, ACC-4 | 000015: `notification_channels_service_no_secret`, `teams_due_for_teardown` lists only teams due, `cost_reconciliation_status` (derived `status`) and `cost_reconciliations_amounts_check`, `api_key_created_at_guard`, `agents_image_digest_check` and `agent_pools_image_digest_check`; `migrate` sets `lock_timeout` per migration (`DefaultLockTimeout`, `WithLockTimeout`, `afs-migrate --lock-timeout`) | ✓ |
 
 ## 5. User stories and acceptance criteria
 
@@ -220,12 +220,14 @@ once, in order, under a lock, and to refuse tampering.
   schema from nothing and are exempt. None rewrites a large table in one step.
 
 - Each migration transaction sets `lock_timeout` (default 10 s, `WithLockTimeout`, `afs-migrate
-  --lock-timeout`), so a DDL blocked by live traffic fails with `55P03` instead of queueing it.
+  --lock-timeout`), so a DDL blocked by live traffic fails with `55P03` instead of queueing it; a
+  negative timeout is refused before any SQL runs, and one below 1 ms is rounded up, never to "none".
 
 Proven by: `TestConcurrentUpAppliesOnce`; `TestChecksumMismatchIsRefused`; `TestUpDownUp`;
 `TestLoadRejectsGaps` and `TestLoadErrors` (order, names, missing up script); `TestUpAndDownErrors`;
 `TestMigrationsStateLockImpact` (lock impact in every header from 000003);
-`TestLockTimeoutStopsBlockedMigration`, `TestLockTimeoutIsSetPerMigration`.
+`TestLockTimeoutStopsBlockedMigration`, `TestLockTimeoutIsSetPerMigration`, `TestLockTimeoutBounds`;
+`TestRunCommands` (`afs-migrate` commands against a fresh database).
 
 **DB-US-8 · Reports from views.** *(refines US-11, US-12)* As an `-restapi` developer, I want daily and
 current views that answer the report API without application-side aggregation.
@@ -419,10 +421,11 @@ expires`, `…/notify-only budgets are a service admin choice for persistent tea
 **DB-US-22 · One agent, one pod, a pinned image.** *(refines US-4; DB-4)* As a team-admin, I want an
 agent that cannot be scaled sideways or run an unpinned image.
 - `agents` has no replica column.
-- An image without `@sha256:` is refused (`23514`).
+- An image that does not end in `@sha256:` and 64 lowercase hex characters is refused (`23514`; the
+  full digest from 000015), for agents and pools.
 
-Proven by: `TestAgentsHaveNoReplicaCount`; `TestPendingGuards/an unpinned image is refused` (insert and
-update).
+Proven by: `TestAgentsHaveNoReplicaCount`; `TestPendingGuards/an image is pinned to a full digest`
+(insert and update, agents and pools; tag, missing, short, uppercase and suffixed digests refused).
 
 **DB-US-23 · Agent identities and cross-account links.** *(refines US-7; DB-5)* As a team-admin, I want
 an agent's role links limited to the accounts my team may use.
@@ -454,10 +457,10 @@ gateway's estimate compared with the bill.
 - `cost_reconciliations.variance_pct` is generated, and `status` is derived on every write (000015):
   `over_threshold` when the estimate is more than setting `billing.variance_alert_pct` (default 5, 0 to
   100) percent above or below the bill, `missing_billing` when nothing was billed for a metered day, else
-  `ok`.
+  `ok`. Both amounts are zero or more (`23514`).
 
 Proven by: `TestModelPriceProposals/pricing settings are typed` (setting bounds); `TestPendingGuards/billed
-cost beyond the variance setting is over threshold`.
+cost beyond the variance setting is over threshold` (including negative amounts `23514`).
 
 **DB-US-27 · People, keys and sign-in providers.** *(refines US-2; DB-11)* As a team-admin, I want
 bindings, keys and providers that cannot be misused.

@@ -1,5 +1,9 @@
 -- Reverses 000015. Down migrations are for local use and tests.
 
+-- 5. Image digests
+ALTER TABLE afs.agent_pools DROP CONSTRAINT agent_pools_image_digest_check;
+ALTER TABLE afs.agents DROP CONSTRAINT agents_image_digest_check;
+
 -- 4. API key creation time
 DROP TRIGGER api_keys_created_at_guard ON afs.api_keys;
 DROP FUNCTION afs.api_key_created_at_guard();
@@ -7,6 +11,7 @@ DROP FUNCTION afs.api_key_created_at_guard();
 -- 3. Reconciliation status
 DROP TRIGGER cost_reconciliations_status ON afs.cost_reconciliations;
 DROP FUNCTION afs.cost_reconciliation_status();
+ALTER TABLE afs.cost_reconciliations DROP CONSTRAINT cost_reconciliations_amounts_check;
 
 -- 2. Teams due for teardown: the 000012 definition
 CREATE OR REPLACE VIEW afs.teams_due_for_teardown WITH (security_invoker = true) AS

@@ -245,3 +245,32 @@ func TestLockTimeoutIsSetPerMigration(t *testing.T) {
 		t.Fatalf("DefaultLockTimeout = %v", migrate.DefaultLockTimeout)
 	}
 }
+
+// R-1: a negative lock timeout is refused before any SQL runs; a sub-millisecond one is not "none".
+func TestLockTimeoutBounds(t *testing.T) {
+	ctx := t.Context()
+	t.Run("negative is refused before the lock", func(t *testing.T) {
+		conn := connect(t)
+		migs := []migrate.Migration{{Version: 1, Name: "a", Up: "CREATE TABLE public.t_neg (id int)", Down: "DROP TABLE public.t_neg"}}
+		if n, err := migrate.Up(ctx, conn, migs, migrate.WithLockTimeout(-time.Second)); n != 0 || !errors.Is(err, migrate.ErrNegativeLockTimeout) {
+			t.Fatalf("up: n=%d err=%v", n, err)
+		}
+		if n, err := migrate.Down(ctx, conn, migs, 1, migrate.WithLockTimeout(-time.Second)); n != 0 || !errors.Is(err, migrate.ErrNegativeLockTimeout) {
+			t.Fatalf("down: n=%d err=%v", n, err)
+		}
+		var tracked bool
+		if err := conn.QueryRow(ctx, `SELECT to_regclass('public.afs_schema_migrations') IS NOT NULL`).Scan(&tracked); err != nil || tracked {
+			t.Fatalf("SQL ran before the option was checked (tracking table exists=%v, %v)", tracked, err)
+		}
+	})
+	t.Run("sub-millisecond rounds up to 1ms", func(t *testing.T) {
+		conn := connect(t)
+		probe := []migrate.Migration{{Version: 1, Name: "probe", Up: `DO $$ BEGIN
+			IF current_setting('lock_timeout') <> '1ms' THEN
+				RAISE EXCEPTION 'lock_timeout is %', current_setting('lock_timeout');
+			END IF; END $$`}}
+		if _, err := migrate.Up(ctx, conn, probe, migrate.WithLockTimeout(300*time.Microsecond)); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

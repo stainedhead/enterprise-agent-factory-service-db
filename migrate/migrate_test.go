@@ -327,8 +327,8 @@ func seedAgents(t *testing.T, conn *pgx.Conn) {
 		INSERT INTO afs.models (id, provider, display_name) VALUES ('claude-sonnet', 'Anthropic', 'Claude Sonnet');
 		INSERT INTO afs.team_models (team_id, model_id) VALUES ('`+teamA+`', 'claude-sonnet');
 		INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES
-		 ('`+agentA1+`', '`+teamA+`', 'reviewer-bot', 'omp-review', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet'),
-		 ('`+agentA2+`', '`+teamA+`', 'incident-scribe', 'hermes-ops', 'ghcr.io/x/hermes@sha256:def', 'claude-sonnet')`)
+		 ('`+agentA1+`', '`+teamA+`', 'reviewer-bot', 'omp-review', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet'),
+		 ('`+agentA2+`', '`+teamA+`', 'incident-scribe', 'hermes-ops', 'ghcr.io/x/hermes@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', 'claude-sonnet')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +499,7 @@ func TestAgentPersistentStorage(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := conn.Exec(ctx, `INSERT INTO afs.agents (id, team_id, name, template, image, model_id, storage_class)
-			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', $1, 'new-agent', 't', 'x@sha256:a', 'claude-sonnet', 'io2-fast')`, teamA)
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', $1, 'new-agent', 't', 'x@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 'io2-fast')`, teamA)
 		if sqlState(err) != "23514" {
 			t.Fatalf("want check_violation, got %v", err)
 		}
@@ -1991,7 +1991,7 @@ func TestSwarmsEphemeralTeamsAndWorkOrders(t *testing.T) {
 	t.Run("pools live only in swarms and share the agent name space", func(t *testing.T) {
 		pool := func(id, team, name string) error {
 			return exec(`INSERT INTO afs.agent_pools (id, team_id, name, template, image, model_id, workers)
-				VALUES ($1, $2, $3, 'omp-fix', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet', 5)`, id, team, name)
+				VALUES ($1, $2, $3, 'omp-fix', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 5)`, id, team, name)
 		}
 		if err := pool("pool_01JD3Z5Y8K2M4N6P8Q0R2S4T94", teamA, "scanners"); sqlState(err) != "23514" {
 			t.Errorf("pool in a persistent team: want 23514, got %v", err)
@@ -2003,11 +2003,11 @@ func TestSwarmsEphemeralTeamsAndWorkOrders(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := exec(`INSERT INTO afs.agents (id, team_id, name, template, image, model_id)
-			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T95', $1, 'scanner', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet')`, swarm); sqlState(err) != "23505" {
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T95', $1, 'scanner', 'omp', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet')`, swarm); sqlState(err) != "23505" {
 			t.Errorf("agent named like a pool: want 23505, got %v", err)
 		}
 		if err := exec(`INSERT INTO afs.agents (id, team_id, name, template, image, model_id)
-			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T96', $1, 'reviewer', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet')`, swarm); err != nil {
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T96', $1, 'reviewer', 'omp', 'ghcr.io/x/omp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet')`, swarm); err != nil {
 			t.Fatal(err)
 		}
 		if err := pool("pool_01JD3Z5Y8K2M4N6P8Q0R2S4T97", swarm, "reviewer"); sqlState(err) != "23505" {

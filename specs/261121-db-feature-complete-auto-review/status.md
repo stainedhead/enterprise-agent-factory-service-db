@@ -4,12 +4,12 @@
 
 | Phase | Name | Status |
 |---|---|---|
-| 0 | Initial research | In Progress |
-| 1 | Specification | Not Started |
-| 2 | Research and data modeling | Not Started |
-| 3 | Architecture and planning | Not Started |
-| 4 | Task breakdown | Not Started |
-| 5 | Implementation | Not Started |
+| 0 | Initial research | Complete |
+| 1 | Specification | Complete |
+| 2 | Research and data modeling | Complete |
+| 3 | Architecture and planning | Complete |
+| 4 | Task breakdown | Complete |
+| 5 | Implementation | Complete |
 | 6 | Completion and archival | Not Started |
 
 ## Phase 0 tasks
@@ -22,3 +22,6 @@ None.
 
 ## Recent activity
 - 2026-11-21 spec created.
+- 2026-11-21 F1 (P1) done: lock timeout bounds.
+- 2026-11-21 F2, F6 done in 000015: non-negative amounts, full image digests.
+- 2026-11-21 F3, F4, F5 done: no-op removed, afs-migrate integration test, data-only load docs.

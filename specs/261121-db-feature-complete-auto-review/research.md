@@ -20,7 +20,12 @@
 - Validate options before taking locks or opening transactions.
 
 ## Open Questions
-- RQ-1 (R-4 now or next release).
+- RQ-1 answered: now (13 fixtures).
+
+## Answers
+1. `22023` (invalid value): hence the early check.
+2. 13 fixtures.
+3. Yes: ordinary triggers do not fire in `replica` mode.
 
 ## References
 - Review PRD §3.

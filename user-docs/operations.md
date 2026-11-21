@@ -43,6 +43,19 @@ copy, configured by the Terraform in `-restapi` (RPO 5 minutes, RTO 1 hour). To 
 3. Point the services at the new endpoint. The reconciler converges Kubernetes and AWS from the restored
    desired state; no manual SQL is needed.
 
+### Data-only loads
+
+A full `pg_dump` / `pg_restore` creates triggers after it loads the data, so nothing changes. A
+**data-only** load (`pg_restore --data-only`, `COPY`, a logical copy) fires the schema's triggers on every
+row: `api_keys` would get a new `created_at` and old keys would fail the 90-day check, and derived values
+such as `cost_reconciliations.status` would be recomputed. Run data-only loads as the schema owner with
+triggers off:
+
+```bash
+pg_restore --data-only --disable-triggers --schema=afs -d "$AFS_OWNER_URL" afs.dump
+# or, in psql before COPY:  SET session_replication_role = replica;
+```
+
 A full restore drill is scheduled for milestone M4 and this section will be updated with its results.
 
 ## Troubleshooting
