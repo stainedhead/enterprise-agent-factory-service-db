@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft for review (2026-11-21) |
+| **Status** | Draft for review, feature-complete scope (2026-11-21) |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
 | **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-16) |
 | **Provides** | [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
@@ -29,7 +29,7 @@ data layer even if a bug in the API forgets a check.
 ## 3. Scope
 
 **In:** schema `afs` and its migrations; roles and grants; RLS; triggers that guard invariants
-(guardrails, required tags, price decisions, secret paths); functions for spend reservation and
+(guardrails, required tags, price decisions, secret paths, ephemeral team and pool rules, work order access); functions for spend reservation and
 partitioning; reporting views; `migrate` package; `afs-migrate` CLI; integration tests; operator docs in
 `user-docs/`.
 
@@ -39,12 +39,12 @@ provisioning (Terraform lives in `-restapi/deploy`).
 ## 4. Requirements owned
 
 Each row traces a product requirement to the objects that implement it. Status: ✓ in schema at
-`000010`; ◐ partly; ○ planned.
+`000012`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase.
 
 | DB req | Product req | Objects | Status |
 |---|---|---|---|
-| DB-1 Teams and lifecycle | TEAM-1, TEAM-5, TEAM-7 | `teams` (kind, state, expiry), `resource_status` | ✓ |
-| DB-2 Isolation tier | TEAM-6 | `teams.isolation_tier` | ○ |
+| DB-1 Teams and lifecycle | TEAM-1, TEAM-5, TEAM-7 | `teams` (kind, state, expiry, `teardown_rule`, `torn_down_at`, `teardown_reason`), lifetime-budget triggers, `teams_due_for_teardown`, `resource_status` | ✓ |
+| DB-2 Isolation tier | TEAM-6 | `teams.isolation_tier`, `team_isolation_guard` | ✓ |
 | DB-3 Allowed AWS accounts | TEAM-8, D6 | `org_aws_accounts`, `teams.allowed_aws_accounts`, `may_manage_aws_accounts`, `afs.account_allowed`, `team_guardrail_guard` | ✓ |
 | DB-4 Agents, one identity one pod | AGT-1, AGT-2, AGT-7 | `agents` (no replica column), digest-pinned image check | ✓ |
 | DB-5 Agent identity and role links | AGT-3, AGT-5, AGT-6, AGT-10 | `agents.iam_identity`, `agent_identities`, `agent_role_links` | ✓ |
@@ -53,21 +53,24 @@ Each row traces a product requirement to the objects that implement it. Status: 
 | DB-8 Configuration values | CFG-7 | `namespace_config_values`, `agent_config_values`, `agent_config_resolved` | ✓ |
 | DB-9 Budgets and spend | BUD-1 to BUD-5, BUD-8 | `budgets`, `spend_counters`, `reserve_spend`, `settle_spend`, `budget_threshold_events`, `usage_events` | ✓ |
 | DB-10 Costs, reconciliation, prices | BUD-6, BUD-7, BUD-9 | `cost_daily`, `cost_reconciliations`, `model_prices`, `model_price_proposals`, pricing settings | ✓ |
-| DB-11 People and access | ACC-1, ACC-2, ACC-4 | `users`, `role_bindings`, `api_keys`, `identity_providers`, `teams.identity_provider_id` | ✓ |
+| DB-11 People and access | ACC-1, ACC-2, ACC-4, ACC-5 | `users`, `role_bindings` and `api_keys` (incl. service-level `security_operator`), `identity_providers`, `teams.identity_provider_id`, `teams.viewer_kubectl` | ✓ |
 | DB-12 Desired state, revisions, audit, outbox | CFG-1, CFG-3, CFG-6, OPS-2 | `version`/`generation`, `touch_row`, `record_revision`, `config_revisions`, `audit_log`, `outbox_events` | ✓ |
 | DB-13 Export and import | CFG-5 | `export_bundles` | ✓ |
 | DB-14 External systems | EXT-1 to EXT-7 | `external_systems`, `external_system_optouts`, `agent_external_access` | ✓ |
-| DB-15 Reporting | RPT-1 to RPT-7, RPT-9 | `agent_activity`, `external_traffic`, daily and current views, `team_budget_position`, `*_by_tag` views | ✓ |
-| DB-16 Scheduled reports | RPT-8 | `report_schedules` | ○ |
-| DB-17 Cost allocation tags | TAG-1 to TAG-6 | `service_tags`, `team_tags`, `team_effective_tags`, `agent_effective_tags` | ✓ |
-| DB-18 Idempotency keys | API contract §1 | `idempotency_keys` | ○ |
-| DB-19 Agent sign-in events | OPS-4 | `agent_login_events` (or a flag on `external_traffic`) | ○ |
-| DB-20 Work orders | WO-1, WO-2 | `work_orders` | ◐ (table only) |
-| DB-21 Swarm pools | AGT-8 | `agent_pools` and pool budgets | ○ (phase 2) |
-| DB-22 Roles and RLS | G2, ACC-3 | `afs_app`, `afs_reconciler`, `afs_gateway`, `afs_billing`, `afs_readonly`; `app_team_scope` and `service_roles_all` policies | ✓ |
+| DB-15 Reporting | RPT-1 to RPT-7, RPT-9 | `agent_activity`, `external_traffic` (with `pool_id`, `worker_pod`), daily and current views, `team_budget_position`, `*_by_tag` views | ✓ |
+| DB-16 Scheduled reports | RPT-8 | `report_schedules` (team's own channels only) | ✓ |
+| DB-17 Cost allocation tags | TAG-1 to TAG-7 | `service_tags`, `team_tags`, `team_effective_tags`, `agent_effective_tags`, `tag_sets` snapshots on every fact row, `cost_allocation_tag_status` | ✓ |
+| DB-18 Idempotency keys | API contract §1 | `idempotency_keys`, `purge_idempotency_keys`, setting `api.idempotency_key_ttl_seconds` | ✓ |
+| DB-19 Agent sign-in events | OPS-4, D17 | None by design: sign-ins go to team log delivery only | ✓ (no table) |
+| DB-20 Work orders | WO-1 to WO-6 | `work_orders`, `work_order_repos`, `work_order_notifications`, `work_order_progress`, `swarm_templates`, settings `work_orders.sla_warning_hours` and `work_orders.notification_channel_id` | ✓ |
+| DB-21 Swarm pools | AGT-8, BUD-8 | `swarm_stages`, `agent_pools`, `pool_handoffs`, pool secrets, bindings, configuration, opt-outs, `pool_role_links`, `pool_external_access`, `pool_config_resolved`, `pool_workers_current`; pools share the team's lifetime budget | ✓ |
+| DB-22 Roles and RLS | G2, ACC-3 | `afs_app`, `afs_reconciler`, `afs_gateway`, `afs_billing`, `afs_readonly`; `app_team_scope` and `service_roles_all` policies; work order policies for security operators and owning teams | ✓ |
 | DB-23 Migrations runner and CLI | CFG-2, CFG-4 | `migrate` (Load, Up, Down, Version, advisory lock, checksum guard), `afs-migrate` | ✓ |
 
 ## 5. User stories and acceptance criteria
+
+Every story below is implemented by migrations 000001 to 000012 and proven by an integration test in
+`migrate/migrate_test.go`; implementation work for this repository is the release (§7).
 
 **DB-US-1 · Isolation that survives an API bug.** *(refines US-3)* As security, I want the database to
 refuse cross-team reads and writes for `afs_app` regardless of the query, so that a missing `WHERE`
@@ -136,6 +139,54 @@ point in time and have the services converge from it.
 - `user-docs/` describes PITR restore and cross-account snapshot copy; a restored database passes
   `afs-migrate version` and the reconciler converges without manual SQL.
 
+**DB-US-10 · Spend attributed to the tags of its time.** *(refines US-12, TAG-6)* As finance, I want
+rollups by tag to use the tags a team had when the spend happened.
+- Every `usage_events`, `agent_activity`, `external_traffic` and `cost_daily` row carries a `tag_set_id`
+  for its own team (another team's set → `23503`).
+- A tag set is immutable (update → `55000`) and its id is derived from its content, so the same tags give
+  the same id; system tags are not stored in it.
+- Given spend before and after a tag change, `cost_daily_by_tag` shows each under the value in effect at
+  the time; a currently required key missing from an old set reads as `NULL`.
+
+**DB-US-11 · Scheduled reports go only to the team.** *(refines RPT-8)* As a team-admin, I want report
+schedules that can only target my team's channels.
+- A schedule whose channel belongs to another team or to the service is refused (`23503`).
+- `afs_billing` can update only the run columns; another team's schedules are invisible to `afs_app`.
+
+**DB-US-12 · Retries are safe for one hour.** *(refines IF-1)* As a client, I want a retried create with the
+same key to be recognised.
+- `(principal, key)` is unique; a caller sees only its own keys (RLS on `afs.current_actor()`).
+- `afs.purge_idempotency_keys()` removes keys past `expires_at`; the TTL setting accepts 60 to 604800.
+
+**DB-US-13 · Ephemeral teams cannot outlive their cap.** *(refines US-14, TEAM-7, BUD-8)* As a service
+admin, I want an ephemeral team to always have an expiry, a teardown rule and a blocking lifetime budget.
+- Without any of them, or with expiry beyond `teams.ephemeral_max_days`, the commit fails (`23514`);
+  removing the lifetime budget fails; changing `kind` fails (`55000`).
+- `teams_due_for_teardown` lists a team when its rule fires (expired, cap reached, work order complete).
+
+**DB-US-14 · Pools only where they belong.** *(refines US-15, AGT-8)* As a team-admin, I want pools that
+behave like agents without breaking the one-agent-one-pod rule.
+- A pool in a persistent team is refused; a pool and an agent with the same name in one team conflict.
+- Pool secrets use the managed path `<prefix>/<namespace>/<pool>/<name>`; a pool role link outside the
+  team's allowed accounts is refused.
+- Handoffs only join pools of the same team; workers 0 to 200; usage, activity and traffic rows may carry
+  `pool_id` and `worker_pod`, and their daily views group by pool.
+
+**DB-US-15 · Work orders visible to the right people.** *(refines US-16, WO-1 to WO-6)* As a security
+operator, I want to manage all work orders, and owning teams to see only theirs.
+- With `afs.security_operator = on`, `afs_app` reads and writes every work order and repository row;
+  without it, a team sees a work order only when it is assigned or owns one of its repositories.
+- One open work order per CVE; an EventBridge event id is accepted once; each repository needs an owner
+  (team or email); `pr_opened` and `merged` need a PR link.
+- A notification of a kind is recorded once per recipient and repository.
+- `work_order_progress.sla_state` is `due_soon` within `work_orders.sla_warning_hours` of the due time.
+- `work_orders.notification_channel_id` accepts only null or a service-level email channel.
+
+**DB-US-16 · Who may grant cluster and node access.** *(refines ACC-5, TEAM-6)* As a service admin, I want
+viewer kubectl and the isolation tier to be mine to set.
+- An `afs_app` caller who is not a service admin changing `viewer_kubectl` or `isolation_tier` gets
+  `42501`.
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |
@@ -151,11 +202,9 @@ point in time and have the services converge from it.
 
 | Milestone (root PRD §9) | This repository |
 |---|---|
-| M0 Foundations | Schema v1 (000001–000010) ✓; tag `v0.10.0` for `-restapi` to adopt |
-| M1 Teams & access | DB-2 isolation tier; DB-18 idempotency keys |
+| M0 Foundations | Schema 000001–000012, feature complete; tag `v0.12.0` for `-restapi` to adopt |
 | M3 Spend control | Load test of `reserve_spend` with `-restapi`; partition maintenance job verified |
-| M4 Production readiness | DB-16 report schedules; DB-19 sign-in events; restore drill documented in `user-docs/` |
-| Phase 2 / 3 | DB-21 swarm pools; DB-20 work order details |
+| M4 Production readiness | Restore drill documented in `user-docs/` |
 
 ## 8. Definition of done (every change)
 
