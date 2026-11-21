@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft for review, feature-complete scope, schema 000013 (2026-11-21) |
+| **Status** | Draft for review, feature-complete scope, schema 000014 (2026-11-21) |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
 | **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-24) |
 | **Provides** | [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
@@ -43,8 +43,9 @@ copies, KMS keys and IAM database authentication (Terraform lives in `-restapi/d
 ## 4. Requirements owned
 
 Each row traces a product requirement to the objects that implement it. Status: ✓ in schema at
-`000013`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
-DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45).
+`000014`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
+DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45); DB-35 and DB-36 close the two gaps left
+open at 000013 (root D54, D49).
 
 | DB req | Product req | Objects | Status |
 |---|---|---|---|
@@ -60,7 +61,7 @@ DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45).
 | DB-10 Costs, reconciliation, prices | BUD-6, BUD-7, BUD-9 | `cost_daily`, `cost_reconciliations`, `model_prices`, `model_price_proposals`, pricing settings | ✓ |
 | DB-11 People and access | ACC-1, ACC-2, ACC-4, ACC-5 | `users`, `role_bindings` and `api_keys` (incl. service-level `security_operator`), `identity_providers`, `teams.identity_provider_id`, `teams.viewer_kubectl` | ✓ |
 | DB-12 Desired state, revisions, audit, outbox | CFG-1, CFG-3, CFG-6, OPS-2 | `version`/`generation`, `touch_row`, `record_revision`, `config_revisions`, `audit_log`, `outbox_events` | ✓ |
-| DB-13 Export and import | CFG-5 | `export_bundles` | ✓ |
+| DB-13 Export and import | CFG-5 | `export_bundles` (nullable `s3_uri` and `sha256`, `download_url`, `download_expires_at`, `size_bytes` from 000014: see DB-36) | ✓ |
 | DB-14 External systems | EXT-1 to EXT-7 | `external_systems`, `external_system_optouts`, `agent_external_access` | ✓ |
 | DB-15 Reporting | RPT-1 to RPT-7, RPT-9 | `agent_activity`, `external_traffic` (with `pool_id`, `worker_pod`), daily and current views, `team_budget_position`, `*_by_tag` views; settings `reports.idle_cpu_millicores`, `egress.denied_spike_threshold` | ✓ |
 | DB-16 Scheduled reports | RPT-8 | `report_schedules` (team's own channels only) | ✓ |
@@ -82,11 +83,14 @@ DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45).
 | DB-32 Retention | RPT-1, D36 | `afs.drop_partitions_older_than`; partition functions `SECURITY DEFINER` for the reconciler | ✓ |
 | DB-33 Runtime settings | IF-1, RPT-2, BUD-2, D45 | `service_settings_runtime_check`; seeded `reports.idle_cpu_millicores` (50), `egress.denied_spike_threshold` (20), `gateway.reservation_ttl_seconds` (900), `api.cors_origins` (`[]`) | ✓ |
 | DB-34 Model output limit | BUD-2, D28 | `models.max_output_tokens` (worst case when a request has no max tokens) | ✓ |
+| DB-35 Agent template catalog | AGT-2, AGT-11, D54 | `agent_templates` (allowed and current image digests, `enabled`; service-admin writes, `agent_templates_notify`), `agents.template_id` and `agent_pools.template_id`, `afs.image_digests_ok`, `afs.template_use_guard` (`agents_template_guard`, `agent_pools_template_guard`); the free-text `template` columns stay | ✓ |
+| DB-36 Export and import transport | CFG-5, D49 | `export_bundles`: nullable `s3_uri` and `sha256`, `download_url`, `download_expires_at`, `size_bytes`, `export_bundles_succeeded_check`, `export_bundles_export_succeeded_check`, reconciler column grants | ✓ |
 
 ## 5. User stories and acceptance criteria
 
-Stories are implemented by migrations 000001 to 000013. Each story ends with **Proven by:**, naming the
-integration test (`migrate/migrate_test.go`, or `migrate/hardening_test.go` for 000013) that proves each
+Stories are implemented by migrations 000001 to 000014. Each story ends with **Proven by:**, naming the
+integration test (`migrate/migrate_test.go`, `migrate/hardening_test.go` for 000013, or
+`migrate/templates_exports_test.go` for 000014) that proves each
 criterion, written `TestName/subtest`. Where a criterion cannot be proven in this repository it names the
 milestone and owner; where a test is still to be written it says **pending** and is a task in the
 release spec. All named tests pass against `postgres:17`.
@@ -106,7 +110,7 @@ cannot leak data.
   has a policy for `afs_app`; a new table without them fails CI.
 - Named exceptions, readable by every `afs_app` caller: `role_bindings` (read before team scope
   exists), `users` (names on member and audit pages), and the service catalog (`models`, `model_prices`,
-  `storage_classes`, `service_settings`, `identity_providers`, service-level `external_systems`). Their
+  `storage_classes`, `service_settings`, `agent_templates`, `identity_providers`, service-level `external_systems`). Their
   writes are restricted (DB-US-17).
 
 Proven by: `TestRowLevelSecurityIsolatesTeams` (team A sees 1 of 2 teams and secrets; no settings sees
@@ -456,9 +460,9 @@ Proven by: `TestConstraints/version bumps on update`, `TestConstraints/revisions
 
 **DB-US-29 · Export bundles.** *(refines US-13; DB-13)* As an operator, I want each export recorded with
 a verifiable checksum.
-- `export_bundles.sha256` is 64 lowercase hex characters.
+- `export_bundles.sha256`, when present, is 64 lowercase hex characters.
 
-Proven by: **pending** (no test yet).
+Proven by: `TestExportBundles/size and checksum are checked`. See DB-US-33 for the 000014 changes.
 
 **DB-US-30 · Outside services by catalog.** *(refines US-8; DB-14)* As a service admin, I want a catalog
 that each level can only narrow.
@@ -475,6 +479,46 @@ agent sign-in events only in the team's log delivery.
 - No table or column records agent sign-ins to external systems.
 
 Proven by: design review (nothing to test; a future table would need a PRD change).
+
+**DB-US-32 · Agent template catalog.** *(refines US-4, US-21; AGT-2, AGT-11; D54)* As a service admin, I
+want to curate the templates teams may use and the image digests each allows, so that a team cannot start
+an agent or pool from a retired template or an unapproved image.
+- Given a template, then its name is unique kebab-case, `allowed_image_digests` has at least one entry,
+  each `sha256:` plus 64 lowercase hex, and `current_image_digest` is on that list; otherwise `23514`
+  (`23505` for a duplicate name).
+- Given a team-admin caller (`afs_app`, not a service admin), when it inserts a template, then `42501`;
+  when it updates or deletes one, then zero rows change; every `afs_app` caller reads the catalog.
+- Given an agent or pool with `template_id`, when it is inserted, or its `template_id` or `image` changes,
+  to a disabled template or an image digest not on the template's allowed list, then `23514`; an unknown
+  template is `23503`.
+- Given templates are disabled or a digest is removed, then existing agents and pools are not changed and
+  their unrelated updates still succeed (the reconciler flags them `TemplateRetired`); re-enabling reopens
+  creation.
+- A template used by an agent or pool cannot be deleted (`23503`, `Conflict`: disable it instead).
+- Agents and pools without `template_id` (all rows before 000014) are not guarded; their free-text
+  `template` column stays.
+- A change to a template is announced on `afs_desired_state` as `agent_templates::<id>`.
+
+Proven by: `TestAgentTemplates/columns are checked`, `TestAgentTemplates/only service admins write
+templates; everyone signed in reads them`, `TestAgentTemplates/a new agent or pool needs an enabled
+template and an allowed digest`, `TestAgentTemplates/a changed template or image is checked, an unrelated
+update is not`, `TestAgentTemplates/disabling a template or removing a digest blocks new use and leaves
+existing rows alone`, `TestAgentTemplates/agents and pools without a template are not guarded`,
+`TestAgentTemplates/a template in use cannot be deleted`, `TestAgentTemplates/template changes are
+announced without a team`.
+
+**DB-US-33 · Export and import without an S3 object.** *(refines US-13; CFG-5; D49)* As the reconciler
+and `afs-api`, I want export and import runs recorded without forcing an S3 location, so that an import
+applied from the request body and an export still being built both fit.
+- An import row has no `s3_uri`; a pending, running or failed export has neither `s3_uri` nor `sha256`
+  until the reconciler has built the bundle.
+- A `succeeded` row without `sha256`, and a `succeeded` export without `s3_uri`, are refused (`23514`).
+- `size_bytes` is not negative (`23514`); `download_url` and `download_expires_at` hold the pre-signed
+  link (not a secret value).
+- The reconciler may update `status`, `summary`, `finished_at`, `s3_uri`, `sha256`, `download_url`,
+  `download_expires_at` and `size_bytes` of an export, and nothing else (`42501`); it cannot insert or delete.
+
+Proven by: `TestExportBundles` (all subtests).
 
 ## 6. Non-functional requirements
 
@@ -498,7 +542,7 @@ Proven by: design review (nothing to test; a future table would need a PRD chang
 
 | Milestone (root PRD §9) | This repository |
 |---|---|
-| M0 Foundations | Schema 000001–000013, feature complete; tag `v0.13.0` for `-restapi` to adopt |
+| M0 Foundations | Schema 000001–000014, feature complete; first release tag `v0.13.0` (nothing is tagged yet, so it is the first release to contain 000011–000014) for `-restapi` to adopt |
 | M3 Spend control | Load test of `reserve_spend` and `reserve_spend_held` with `-restapi` (concurrent bound, p99, RLS overhead); partition and retention jobs verified |
 | M4 Production readiness | Restore drill documented in `user-docs/` |
 
@@ -542,5 +586,5 @@ Proven by: design review (nothing to test; a future table would need a PRD chang
 | RDS, PITR, snapshot copy, KMS, IAM authentication, parameter group | `-restapi` Terraform (`deploy/terraform`) | RDS PostgreSQL 17 Multi-AZ, PITR, cross-account snapshot copy, `rds.force_ssl`, `rds_iam` LOGIN users, connection limits | Before M1 | M0–M4 |
 | Load test | `-restapi` | Concurrent `reserve_spend` bound, p99, RLS overhead | — | M3 |
 | CI | This repository | `postgres:17` service container for `make test-db` | Every PR | M0 |
-| Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
-| Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D56, recorded in root PRD §10.1; ADR-015 in the root ADR log) | Scope and the 000013 behaviour | — | — |
+| Database contract | Root `docs/contracts/database-contract.md` | Roles, settings, functions, error mapping; must list 000013 and 000014 objects and the 4-argument `afs.secret_path(team, agent, pool, name)` in §4.2 | With `v0.13.0` | M0 |
+| Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D56, recorded in root PRD §10.1; ADR-015 in the root ADR log) | Scope and the 000013 and 000014 behaviour (D49, D54) | — | — |
