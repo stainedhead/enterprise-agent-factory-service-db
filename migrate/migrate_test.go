@@ -1800,6 +1800,10 @@ func TestReportSchedulesIsolationTierAndIdempotencyKeys(t *testing.T) {
 			VALUES ('usr_a', 'forged', 'CreateAgent', sha256('x'), now() + interval '1 hour')`); sqlState(err) != "42501" {
 			t.Errorf("writing a key as someone else: want 42501, got %v", err)
 		}
+		if err := as(teamA, "usr_a", `UPDATE afs.idempotency_keys SET state = 'completed', response_status = 201,
+			response_body = '{"apiKey": {"name": "ci", "secretKey": "afsk_example"}}' WHERE key = 'retry-1'`); sqlState(err) != "23514" {
+			t.Errorf("stored response with a secretKey: want 23514, got %v", err)
+		}
 		if err := as(teamA, "usr_a", `UPDATE afs.idempotency_keys SET state = 'completed' WHERE key = 'retry-1'`); sqlState(err) != "23514" {
 			t.Errorf("completed without a response: want 23514, got %v", err)
 		}
@@ -1834,15 +1838,14 @@ func TestReportSchedulesIsolationTierAndIdempotencyKeys(t *testing.T) {
 	})
 }
 
-// role_bindings is exempt: the API reads the caller's bindings to work out which teams it may see,
-// before any team scope exists. Writes to it are service-admin or team-admin API operations.
+// Every table with a team_id has row-level security (role_bindings included since 000013: its reads
+// are open, its writes are scoped), and every table with row-level security has a policy for afs_app.
 func TestEveryTeamTableHasRowLevelSecurity(t *testing.T) {
 	conn := migrated(t)
 	rows, err := conn.Query(t.Context(), `
 		SELECT c.relname FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'afs'
 		WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND NOT c.relrowsecurity
-		  AND c.relname <> 'role_bindings'
 		  AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'team_id' AND NOT a.attisdropped)`)
 	if err != nil {
 		t.Fatal(err)
@@ -1854,6 +1857,76 @@ func TestEveryTeamTableHasRowLevelSecurity(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Errorf("afs.%s has team_id but no row-level security", name)
+	}
+	rows.Close()
+	var missing []string
+	rows, err = conn.Query(t.Context(), `
+		SELECT c.relname FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'afs'
+		WHERE c.relrowsecurity AND NOT c.relispartition
+		  AND NOT EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname = 'afs' AND p.tablename = c.relname
+		                  AND 'afs_app' = ANY (p.roles))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range missing {
+		t.Errorf("afs.%s has row-level security but no policy for afs_app", name)
+	}
+}
+
+// Views run with the caller's rights, so row-level security applies through them.
+func TestEveryViewIsSecurityInvoker(t *testing.T) {
+	conn := migrated(t)
+	rows, err := conn.Query(t.Context(), `
+		SELECT c.relname FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'afs'
+		WHERE c.relkind = 'v' AND NOT coalesce('security_invoker=true' = ANY (c.reloptions), false)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		t.Errorf("view afs.%s is not security_invoker", name)
+	}
+}
+
+// Two migrators at once: one applies everything, the other waits on the lock and finds nothing to do.
+func TestConcurrentUpAppliesOnce(t *testing.T) {
+	first := connect(t)
+	ctx := t.Context()
+	second, err := pgx.ConnectConfig(ctx, first.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close(context.Background()) })
+	migs, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		n   int
+		err error
+	}
+	results := make(chan result, 2)
+	for _, c := range []*pgx.Conn{first, second} {
+		go func(c *pgx.Conn) {
+			n, err := migrate.Up(ctx, c, migs)
+			results <- result{n, err}
+		}(c)
+	}
+	a, b := <-results, <-results
+	if a.err != nil || b.err != nil {
+		t.Fatalf("errors: %v, %v", a.err, b.err)
+	}
+	if a.n+b.n != len(migs) || (a.n != 0 && b.n != 0) {
+		t.Errorf("applied %d and %d, want %d and 0", a.n, b.n, len(migs))
 	}
 }
 
@@ -1900,8 +1973,8 @@ func TestSwarmsEphemeralTeamsAndWorkOrders(t *testing.T) {
 		if err := tx("", `DELETE FROM afs.budgets WHERE team_id = $1`, swarm); sqlState(err) != "23514" {
 			t.Errorf("remove the lifetime budget: want 23514, got %v", err)
 		}
-		if err := exec(`UPDATE afs.teams SET kind = 'persistent' WHERE id = $1`, swarm); sqlState(err) != "55000" {
-			t.Errorf("change kind: want 55000, got %v", err)
+		if err := exec(`UPDATE afs.teams SET kind = 'persistent' WHERE id = $1`, swarm); sqlState(err) != "23514" {
+			t.Errorf("change kind: want 23514, got %v", err)
 		}
 		if err := exec(`UPDATE afs.teams SET teardown_rule = 'at_expiry' WHERE id = $1`, teamA); sqlState(err) != "23514" {
 			t.Errorf("teardown rule on a persistent team: want 23514, got %v", err)
@@ -2160,6 +2233,44 @@ func TestSwarmsEphemeralTeamsAndWorkOrders(t *testing.T) {
 		if err := tx(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`, `INSERT INTO afs.work_orders (id, kind, title, team_id)
 			VALUES ('wo_01JD3Z5Y8K2M4N6P8Q0R2S4TB5', 'general', 'x', $1)`, teamA); sqlState(err) != "42501" {
 			t.Errorf("team B creating a work order for team A: want 42501, got %v", err)
+		}
+	})
+
+	t.Run("teams only read work orders and report progress on their own", func(t *testing.T) {
+		changed := func(setup, sql string, args ...any) int64 {
+			t.Helper()
+			var n int64
+			if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, setup); err != nil {
+					return err
+				}
+				tag, err := tx.Exec(ctx, sql, args...)
+				n = tag.RowsAffected()
+				return err
+			}); err != nil {
+				t.Fatalf("%s: %v", sql, err)
+			}
+			return n
+		}
+		owning := `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + teamA + `'`
+		assigned := `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + swarm + `'`
+		if n := changed(owning, `DELETE FROM afs.work_orders WHERE id = $1`, wo); n != 0 {
+			t.Errorf("owning team deleted the work order (%d rows)", n)
+		}
+		if n := changed(assigned, `UPDATE afs.work_orders SET status = 'cancelled' WHERE id = $1`, wo); n != 0 {
+			t.Errorf("assigned team cancelled the work order (%d rows)", n)
+		}
+		if n := changed(owning, `UPDATE afs.work_order_repos SET detail = 'x' WHERE work_order_id = $1`, wo); n != 0 {
+			t.Errorf("owning team changed repository progress (%d rows)", n)
+		}
+		if n := changed(assigned, `UPDATE afs.work_order_repos SET detail = 'checked' WHERE work_order_id = $1`, wo); n == 0 {
+			t.Error("assigned team could not report progress")
+		}
+		if err := tx(assigned, `UPDATE afs.work_order_repos SET owning_contact = 'x@example.com' WHERE work_order_id = $1`, wo); sqlState(err) != "42501" {
+			t.Errorf("assigned team changing a repository's owner: want 42501, got %v", err)
+		}
+		if err := tx(assigned, `INSERT INTO afs.work_order_repos (work_order_id, host, repo, owning_contact) VALUES ($1, 'github.com', 'acme/extra', 'x@example.com')`, wo); sqlState(err) != "42501" {
+			t.Errorf("assigned team adding a repository: want 42501, got %v", err)
 		}
 	})
 

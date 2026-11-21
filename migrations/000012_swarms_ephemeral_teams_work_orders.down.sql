@@ -3,8 +3,13 @@
 DROP TABLE afs.cost_allocation_tag_status;
 
 DROP VIEW afs.work_order_progress;
-DROP POLICY app_scope ON afs.work_orders;
-DROP POLICY app_scope ON afs.work_order_repos;
+DROP POLICY app_read ON afs.work_orders;
+DROP POLICY app_write ON afs.work_orders;
+DROP POLICY app_read ON afs.work_order_repos;
+DROP POLICY app_write ON afs.work_order_repos;
+DROP POLICY app_progress ON afs.work_order_repos;
+DROP TRIGGER work_order_repos_progress_guard ON afs.work_order_repos;
+DROP FUNCTION afs.work_order_repo_progress_guard();
 DROP POLICY app_scope ON afs.work_order_notifications;
 DROP FUNCTION afs.caller_owns_work_order_repo(text);
 DROP FUNCTION afs.work_order_team(text);

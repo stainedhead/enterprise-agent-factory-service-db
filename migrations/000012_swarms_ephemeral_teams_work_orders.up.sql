@@ -105,7 +105,7 @@ DECLARE
   v_max numeric;
 BEGIN
   IF TG_OP = 'UPDATE' AND NEW.kind IS DISTINCT FROM OLD.kind THEN
-    RAISE EXCEPTION 'a team''s kind cannot change; create a new team' USING ERRCODE = 'object_not_in_prerequisite_state';
+    RAISE EXCEPTION 'a team''s kind cannot change; create a new team' USING ERRCODE = 'check_violation';
   END IF;
   IF NEW.kind = 'ephemeral' AND NEW.state NOT IN ('deleting', 'deleted')
      AND (TG_OP = 'INSERT' OR NEW.expires_at IS DISTINCT FROM OLD.expires_at) THEN
@@ -787,16 +787,37 @@ REVOKE EXECUTE ON FUNCTION afs.work_order_team(text), afs.caller_owns_work_order
 GRANT EXECUTE ON FUNCTION afs.work_order_team(text), afs.caller_owns_work_order_repo(text) TO afs_app;
 
 DROP POLICY app_team_scope ON afs.work_orders;
-CREATE POLICY app_scope ON afs.work_orders TO afs_app
-  USING (afs.caller_is_security_operator() OR afs.caller_sees_team(team_id) OR afs.caller_owns_work_order_repo(id))
-  WITH CHECK (afs.caller_is_security_operator() OR afs.caller_is_service_admin() OR afs.caller_sees_team(team_id));
+-- Teams read; only security operators and service admins create, change or delete (WO-5, WO-6).
+CREATE POLICY app_read ON afs.work_orders FOR SELECT TO afs_app
+  USING (afs.caller_is_security_operator() OR afs.caller_sees_team(team_id) OR afs.caller_owns_work_order_repo(id));
+CREATE POLICY app_write ON afs.work_orders TO afs_app
+  USING (afs.caller_is_security_operator() OR afs.caller_is_service_admin())
+  WITH CHECK (afs.caller_is_security_operator() OR afs.caller_is_service_admin());
 
 ALTER TABLE afs.work_order_repos ENABLE ROW LEVEL SECURITY;
-CREATE POLICY app_scope ON afs.work_order_repos TO afs_app
+CREATE POLICY app_read ON afs.work_order_repos FOR SELECT TO afs_app
   USING (afs.caller_is_security_operator() OR afs.caller_sees_team(owning_team_id)
-         OR afs.caller_sees_team(afs.work_order_team(work_order_id)))
-  WITH CHECK (afs.caller_is_security_operator() OR afs.caller_is_service_admin()
-              OR afs.caller_sees_team(afs.work_order_team(work_order_id)));
+         OR afs.caller_sees_team(afs.work_order_team(work_order_id)));
+CREATE POLICY app_write ON afs.work_order_repos TO afs_app
+  USING (afs.caller_is_security_operator() OR afs.caller_is_service_admin())
+  WITH CHECK (afs.caller_is_security_operator() OR afs.caller_is_service_admin());
+-- The assigned team reports progress on its work order's repositories (WO-3); the guard below limits
+-- it to the progress columns.
+CREATE POLICY app_progress ON afs.work_order_repos FOR UPDATE TO afs_app
+  USING (afs.caller_sees_team(afs.work_order_team(work_order_id)))
+  WITH CHECK (afs.caller_sees_team(afs.work_order_team(work_order_id)));
+CREATE FUNCTION afs.work_order_repo_progress_guard() RETURNS trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog, afs AS $$
+BEGIN
+  IF current_user = 'afs_app' AND NOT afs.caller_is_security_operator() AND NOT afs.caller_is_service_admin()
+     AND (NEW.work_order_id, NEW.repo, NEW.host, NEW.owning_team_id, NEW.owning_contact)
+         IS DISTINCT FROM (OLD.work_order_id, OLD.repo, OLD.host, OLD.owning_team_id, OLD.owning_contact) THEN
+    RAISE EXCEPTION 'the assigned team may change only a repository''s progress' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER work_order_repos_progress_guard BEFORE UPDATE ON afs.work_order_repos
+  FOR EACH ROW EXECUTE FUNCTION afs.work_order_repo_progress_guard();
 CREATE POLICY service_roles_all ON afs.work_order_repos TO afs_reconciler, afs_gateway, afs_billing, afs_readonly
   USING (true) WITH CHECK (true);
 
@@ -820,7 +841,7 @@ CREATE POLICY service_roles_all ON afs.cost_allocation_tag_status TO afs_reconci
   USING (true) WITH CHECK (true);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON afs.swarm_templates TO afs_app;
-GRANT SELECT, INSERT, UPDATE ON afs.work_order_repos TO afs_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON afs.work_order_repos TO afs_app;
 GRANT SELECT ON afs.work_order_notifications, afs.work_order_progress, afs.cost_allocation_tag_status TO afs_app;
 GRANT SELECT ON afs.swarm_templates, afs.work_order_repos, afs.work_order_notifications, afs.work_order_progress,
   afs.cost_allocation_tag_status TO afs_reconciler, afs_readonly;

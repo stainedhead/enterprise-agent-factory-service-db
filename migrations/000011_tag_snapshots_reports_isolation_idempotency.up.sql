@@ -257,8 +257,9 @@ CREATE TABLE afs.idempotency_keys (
   request_sha256  bytea NOT NULL CHECK (length(request_sha256) = 32),
   state           text NOT NULL DEFAULT 'in_progress' CHECK (state IN ('in_progress', 'completed')),
   response_status smallint CHECK (response_status BETWEEN 200 AND 599),
-  -- The response as returned. API responses never carry secret values.
-  response_body   jsonb,
+  -- The response as returned. Responses that carry a one-time secret (CreateApiKey's secretKey) are
+  -- never stored; the CHECK below refuses them anywhere in the body.
+  response_body   jsonb CHECK (NOT jsonb_path_exists(response_body, 'strict $.**.secretKey')),
   created_at      timestamptz NOT NULL DEFAULT now(),
   expires_at      timestamptz NOT NULL,
   PRIMARY KEY (principal, key),
@@ -273,7 +274,7 @@ CREATE POLICY app_own_keys ON afs.idempotency_keys TO afs_app
 CREATE POLICY service_roles_all ON afs.idempotency_keys TO afs_reconciler, afs_readonly
   USING (true) WITH CHECK (true);
 GRANT SELECT, INSERT, UPDATE (state, response_status, response_body), DELETE ON afs.idempotency_keys TO afs_app;
-GRANT SELECT, DELETE ON afs.idempotency_keys TO afs_reconciler;
+GRANT SELECT (principal, key, expires_at), DELETE ON afs.idempotency_keys TO afs_reconciler;
 
 -- Removes expired keys; the reconciler runs it periodically. Returns the number removed.
 CREATE FUNCTION afs.purge_idempotency_keys() RETURNS bigint
