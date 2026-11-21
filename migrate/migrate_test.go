@@ -710,3 +710,107 @@ func TestAgentEnvBackfill(t *testing.T) {
 		t.Fatalf("backfilled %d of 2 env entries (err %v)", n, err)
 	}
 }
+
+func TestCrossAccountRoleLinks(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	exec := func(sql string, args ...any) error {
+		_, err := conn.Exec(ctx, sql, args...)
+		return err
+	}
+	if err := exec(`INSERT INTO afs.linked_aws_accounts (id, display_name, available_to) VALUES
+		('222233334444', 'payments-prod', 'listed_teams'),
+		('555566667777', 'shared-tools', 'all_teams'),
+		('888899990000', 'retired', 'all_teams')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(`UPDATE afs.linked_aws_accounts SET enabled = false WHERE id = '888899990000'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(`INSERT INTO afs.linked_aws_account_teams (account_id, team_id) VALUES ('222233334444', $1)`, teamA); err != nil {
+		t.Fatal(err)
+	}
+	link := func(id, agentID, account, role, profile, ext string) error {
+		return exec(`INSERT INTO afs.agent_role_links (id, team_id, agent_id, account_id, role_arn, profile_name, external_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, teamA, agentID, account, role, profile, ext)
+	}
+	const ext = "afs-AbCdEfGhIjKlMnOpQrSt"
+
+	t.Run("agent on the shared team role cannot link", func(t *testing.T) {
+		err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T60", agentA1, "222233334444", "arn:aws:iam::222233334444:role/deployer", "prod", ext+"0")
+		if sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+	})
+	if err := exec(`UPDATE afs.agents SET iam_identity = 'dedicated' WHERE id = $1`, agentA1); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("dedicated agent links to an account its team may use", func(t *testing.T) {
+		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T61", agentA1, "222233334444", "arn:aws:iam::222233334444:role/afs/deployer", "prod-deployer", ext+"1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T62", agentA1, "555566667777", "arn:aws:iam::555566667777:role/reader", "tools", ext+"2"); err != nil {
+			t.Fatalf("all_teams account: %v", err)
+		}
+		var st string
+		if err := conn.QueryRow(ctx, `SELECT status FROM afs.agent_role_links WHERE id = 'arl_01JD3Z5Y8K2M4N6P8Q0R2S4T61'`).Scan(&st); err != nil || st != "pending_trust" {
+			t.Fatalf("status = %q, err %v", st, err)
+		}
+	})
+	t.Run("unregistered, disabled or unlisted accounts rejected", func(t *testing.T) {
+		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T63", agentA1, "111111111111", "arn:aws:iam::111111111111:role/x", "x", ext+"3"); sqlState(err) != "23514" {
+			t.Errorf("unregistered: want check_violation, got %v", err)
+		}
+		if err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T64", agentA1, "888899990000", "arn:aws:iam::888899990000:role/x", "y", ext+"4"); sqlState(err) != "23514" {
+			t.Errorf("disabled: want check_violation, got %v", err)
+		}
+		if err := exec(`UPDATE afs.agents SET iam_identity = 'dedicated' WHERE team_id = $1`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		_, err := conn.Exec(ctx, `INSERT INTO afs.models (id, provider, display_name) VALUES ('m2', 'x', 'x');
+			INSERT INTO afs.team_models (team_id, model_id) VALUES ('`+teamB+`', 'm2');
+			INSERT INTO afs.agents (id, team_id, name, template, image, model_id, iam_identity)
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', '`+teamB+`', 'b-agent', 't', 'x@sha256:a', 'm2', 'dedicated')`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = exec(`INSERT INTO afs.agent_role_links (id, team_id, agent_id, account_id, role_arn, profile_name, external_id)
+			VALUES ('arl_01JD3Z5Y8K2M4N6P8Q0R2S4T65', $1, 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', '222233334444', 'arn:aws:iam::222233334444:role/x', 'z', $2)`, teamB, ext+"5")
+		if sqlState(err) != "23514" {
+			t.Errorf("team not listed: want check_violation, got %v", err)
+		}
+	})
+	t.Run("role ARN must be in the linked account", func(t *testing.T) {
+		err := link("arl_01JD3Z5Y8K2M4N6P8Q0R2S4T66", agentA1, "222233334444", "arn:aws:iam::555566667777:role/x", "mismatch", ext+"6")
+		if sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+	})
+	t.Run("role and external ID are immutable; status is not", func(t *testing.T) {
+		if err := exec(`UPDATE afs.agent_role_links SET role_arn = 'arn:aws:iam::222233334444:role/other' WHERE id = 'arl_01JD3Z5Y8K2M4N6P8Q0R2S4T61'`); sqlState(err) != "55000" {
+			t.Errorf("role change: want 55000, got %v", err)
+		}
+		if err := exec(`UPDATE afs.agent_role_links SET status = 'verified', last_verified_at = now() WHERE id = 'arl_01JD3Z5Y8K2M4N6P8Q0R2S4T61'`); err != nil {
+			t.Errorf("status update: %v", err)
+		}
+	})
+	t.Run("agent with links cannot return to the team role", func(t *testing.T) {
+		if err := exec(`UPDATE afs.agents SET iam_identity = 'team_shared' WHERE id = $1`, agentA1); sqlState(err) != "55000" {
+			t.Fatalf("want 55000, got %v", err)
+		}
+	})
+	t.Run("other team cannot see links", func(t *testing.T) {
+		var n int
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.agent_role_links WHERE team_id = $1`, teamA).Scan(&n)
+		})
+		if err != nil || n != 0 {
+			t.Fatalf("team B sees %d team A links (err %v)", n, err)
+		}
+	})
+}
