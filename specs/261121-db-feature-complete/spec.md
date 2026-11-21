@@ -95,6 +95,24 @@ No application layers: this repository is SQL migrations plus the `migrate` Go p
 - `make gate` green; integration tests green against PostgreSQL; `go test -cover ./migrate/` ≥ 90%.
 - Up/down/up passes with 000015; `pg_dump --schema-only` after `up` then `down 1` equals the dump at 000014.
 
+## Edge Cases
+
+- Nullable composite foreign keys: `(team_id, secret_id)` with `team_id NULL` (service-level notification
+  channels) is not checked by PostgreSQL (MATCH SIMPLE), so a service-level channel can name any secret id.
+  FR-015 tests it; a fix goes in 000015.
+- Policies other than `app_team_scope` (work orders, export bundles, catalog `app_write`) need their own
+  zero-row assertions; FR-001 iterates over `app_team_scope` tables and lists the others explicitly.
+- Partition drop on a month boundary: tests use fixed dates relative to `date_trunc('month', now())`.
+- Concurrency: FR-002 uses 50 separate connections, not goroutines on one connection.
+- Lock timeout: must not apply to the advisory-lock wait (two migrators queue by design, DB-US-7).
+
+## Open Questions
+
+| Id | Question | Resolution path |
+|---|---|---|
+| SQ-1 | Should a service-level channel be able to hold a credential reference at all? | Decide in Step 3 (implementation-notes); default: refuse until a service-level secret store exists |
+| SQ-2 | Default `lock_timeout` value | Decide in Step 3; 10 s proposed, overridable by `WithLockTimeout` |
+
 ## Risks and Mitigation
 
 | Risk | Mitigation |

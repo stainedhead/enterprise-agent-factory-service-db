@@ -19,6 +19,22 @@ Purpose: decisions, edge cases and deviations, recorded as they happen. Update a
 - **TD-4 Spec directory name.** `261121-db-feature-complete` (shorter than the PRD-derived
   `enterprise-agent-factory-service-db`), as requested; the dashboard keeps the PRD-derived feature name.
 
+## Step 2 spec review (review-spec)
+
+Verdict on first read: **Needs revision**; after fixes: **Implementation-ready**.
+
+| Dimension | First read | After fix | Note |
+|---|---|---|---|
+| Acceptance criteria | Pass | Pass | FR-001–FR-019 each name the test to add |
+| Technical approach | Pass | Pass | TDD, fix forward in 000015 |
+| Component coverage | Pass | Pass | Files named in Scope of Changes |
+| Edge case handling | Warn | Pass | Added Edge Cases (nullable composite FK, non-standard policies, month boundaries, concurrency, advisory lock vs lock timeout) |
+| Open questions | Warn | Pass | Added SQ-1, SQ-2 with resolution paths |
+| Out-of-scope clarity | Pass | Pass | Non-goals name M3/M4 owners |
+| Status initialization | Pass | Pass | Phase 0 In Progress |
+
+tasks.md filled with T1–T9.
+
 ## Edge Cases & Solutions
 
 ## Deviations from Plan
