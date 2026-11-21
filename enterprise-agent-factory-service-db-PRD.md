@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Draft for review, feature-complete scope, schema 000014 (2026-11-21) |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
-| **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-24) |
+| **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-26) |
 | **Provides** | [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
 | **Consumes** | No service at runtime. The schema relies on jobs and infrastructure owned elsewhere (§10) |
 | **Dictionary** | [docs/data-model.md](docs/data-model.md) |
@@ -45,7 +45,7 @@ copies, KMS keys and IAM database authentication (Terraform lives in `-restapi/d
 Each row traces a product requirement to the objects that implement it. Status: ✓ in schema at
 `000014`. Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
 DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45); DB-35 and DB-36 close the two gaps left
-open at 000013 (root D54, D49).
+open at 000013 (root D54, D49); DB-37 adds owner resolution for work orders (root D38).
 
 | DB req | Product req | Objects | Status |
 |---|---|---|---|
@@ -77,14 +77,15 @@ open at 000013 (root D54, D49).
 | DB-26 Service catalog and settings writes | BUD-9, AGT-9, D35 | `app_read` / `app_write` policies on `service_settings`, `models`, `model_prices`, `storage_classes`; restrictive `app_admin_*` policies on `team_models` | ✓ |
 | DB-27 Bindings and users writes | ACC-2, ACC-3, D35 | RLS on `role_bindings` (reads open; service-level roles by service admins, team roles on the caller's teams) and `users` (reads open; own row or service admin) | ✓ |
 | DB-28 Temporary ceiling raise | BUD-1, D5, D34 | `teams.ceiling_override_usd`, `teams.ceiling_override_expires_at`, `teams_ceiling_override_check`, `afs.team_ceiling`, `check_budget_ceiling`, reconciler column grants | ✓ |
-| DB-29 Budget exhaustion mode | G3, BUD-8, D33 | `budget_exhaust_guard` (`budgets_exhaust_guard` trigger) | ✓ |
+| DB-29 Budget exhaustion mode | G3, BUD-10, D33 | `budget_exhaust_guard` (`budgets_exhaust_guard` trigger) | ✓ |
 | DB-30 Spend periods and held reservations | BUD-2, BUD-4, D31 | `afs.ensure_spend_counter`, `spend_reservations`, `afs.reserve_spend_held`, `afs.settle_reservation`, `afs.release_expired_reservations`, setting `gateway.reservation_ttl_seconds` | ✓ |
 | DB-31 Change feed | CFG-2, D30 | `afs.notify_desired_state`, `<table>_notify` triggers on every table with a revision trigger, channel `afs_desired_state` | ✓ |
 | DB-32 Retention | RPT-1, D36 | `afs.drop_partitions_older_than`; partition functions `SECURITY DEFINER` for the reconciler | ✓ |
-| DB-33 Runtime settings | IF-1, RPT-2, BUD-2, D45 | `service_settings_runtime_check`; seeded `reports.idle_cpu_millicores` (50), `egress.denied_spike_threshold` (20), `gateway.reservation_ttl_seconds` (900), `api.cors_origins` (`[]`) | ✓ |
+| DB-33 Runtime settings | IF-1, RPT-5, RPT-6, BUD-2, D45 | `service_settings_runtime_check`; seeded `reports.idle_cpu_millicores` (50), `egress.denied_spike_threshold` (20), `gateway.reservation_ttl_seconds` (900), `api.cors_origins` (`[]`) | ✓ |
 | DB-34 Model output limit | BUD-2, D28 | `models.max_output_tokens` (worst case when a request has no max tokens) | ✓ |
 | DB-35 Agent template catalog | AGT-2, AGT-11, D54 | `agent_templates` (allowed and current image digests, `enabled`; service-admin writes, `agent_templates_notify`), `agents.template_id` and `agent_pools.template_id`, `afs.image_digests_ok`, `afs.template_use_guard` (`agents_template_guard`, `agent_pools_template_guard`); the free-text `template` columns stay | ✓ |
 | DB-36 Export and import transport | CFG-5, D49 | `export_bundles`: nullable `s3_uri` and `sha256`, `download_url`, `download_expires_at`, `size_bytes`, `export_bundles_succeeded_check`, `export_bundles_export_succeeded_check`, reconciler column grants | ✓ |
+| DB-37 Repository owner resolution | WO-1, D38 | `afs.resolve_repo_owners(host, repo)` (000014, `SECURITY DEFINER`, executable by `afs_app` and `afs_reconciler` only), reading namespace config value `AFS_OWNED_REPOS` | ✓ |
 
 ## 5. User stories and acceptance criteria
 
@@ -96,7 +97,8 @@ milestone and owner; where a test is still to be written it says **pending** and
 release spec. All named tests pass against `postgres:17`.
 
 SQLSTATEs map to API errors through database contract §6: `42501` → `AccessDenied`, `23514` →
-`ValidationError`, `23503` and `23505` and `55000` → `Conflict`.
+`ValidationError`, `23503` → `ValidationError` on insert or update and `Conflict` on delete, `23505` and
+`55000` → `Conflict`.
 
 **DB-US-1 · Isolation that survives an API bug.** *(refines US-3)* As security, I want the database to
 refuse cross-team reads and writes for `afs_app` regardless of the query, so that a missing `WHERE`
@@ -168,9 +170,10 @@ able to hold a secret value.
 - A secret row whose ARN does not match `afs.secret_path(team, agent, name)` (or the 4-argument pool form
   `afs.secret_path(team, agent, pool, name)`) is refused (`23514`).
 - Configuration names and tag keys that look like credentials are refused (`23514`).
-- A stored idempotent response that contains `secretKey` anywhere in its body is refused (`23514`); the
-  API does not store `CreateApiKey` responses, and the reconciler can read only `principal`, `key` and
-  `expires_at`.
+- A stored idempotent response that contains `secretKey` anywhere in its body is refused (`23514`); the API
+  stores `CreateApiKey` and `CreateServiceApiKey` responses with `secretKey` removed (D52), so a replay
+  returns the key's metadata without it, and the CHECK refuses any body that still contains it; the
+  reconciler can read only `principal`, `key` and `expires_at`.
 
 Proven by: `TestConstraints/no secret value column exists`; `TestSecretPathsAreManaged/ARN outside the
 managed path rejected`; `TestSwarmsEphemeralTeamsAndWorkOrders/pool secrets have their own path and bind
@@ -382,8 +385,8 @@ schedule without owner rights.
 Proven by: `TestHardeningSpendPeriodsAndChangeFeed/old monthly partitions are dropped by the reconciler`
 (`usage_events`). The same query covers activity and traffic; their cases are **pending**.
 
-**DB-US-21 · Temporary ceiling raise and notify-only budgets.** *(refines US-1, US-9; BUD-1, G3; D5,
-D33, D34)* As a service admin, I want to raise a ceiling for a limited time and, for a persistent team
+**DB-US-21 · Temporary ceiling raise and notify-only budgets.** *(refines US-1, US-9, US-24; BUD-1, BUD-10,
+G3; D5, D33, D34)* As a service admin, I want to raise a ceiling for a limited time and, for a persistent team
 only, choose notify-only.
 - `ceiling_override_usd` and `ceiling_override_expires_at` are set together and the override is above
   `max_budget_usd`; otherwise `23514`. Only service admins set them (DB-US-2).
@@ -449,7 +452,7 @@ Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/security operators are a servi
 `TestIdentityProvidersAndTeamGuardrails` (provider subtests); DB-US-17 for binding writes. Key expiry
 beyond 90 days: **pending**.
 
-**DB-US-28 · History and audit.** *(refines US-13, US-14; DB-12)* As an auditor, I want every change
+**DB-US-28 · History and audit.** *(refines US-13, US-14, US-20; DB-12)* As an auditor, I want every change
 versioned and every audit row permanent.
 - An update bumps `version`; every desired-state change writes a `config_revisions` row.
 - `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`; audit rows can name a pool and worker pod.
@@ -458,11 +461,12 @@ Proven by: `TestConstraints/version bumps on update`, `TestConstraints/revisions
 `TestConstraints/audit log is append-only` (UPDATE and DELETE). `TRUNCATE` and pool attribution in audit:
 **pending**.
 
-**DB-US-29 · Export bundles.** *(refines US-13; DB-13)* As an operator, I want each export recorded with
-a verifiable checksum.
+**DB-US-29 · Export bundle checksum.** *(refines US-13; DB-13)* As an operator, I want each export recorded
+with a verifiable checksum.
 - `export_bundles.sha256`, when present, is 64 lowercase hex characters.
 
-Proven by: `TestExportBundles/size and checksum are checked`. See DB-US-33 for the 000014 changes.
+Proven by: `TestExportBundles/size and checksum are checked`. The rest of the `export_bundles` rules
+(nullable `s3_uri`, download link, size, reconciler grants, service-admin-only access) are DB-US-33.
 
 **DB-US-30 · Outside services by catalog.** *(refines US-8; DB-14)* As a service admin, I want a catalog
 that each level can only narrow.
@@ -517,8 +521,78 @@ applied from the request body and an export still being built both fit.
   link (not a secret value).
 - The reconciler may update `status`, `summary`, `finished_at`, `s3_uri`, `sha256`, `download_url`,
   `download_expires_at` and `size_bytes` of an export, and nothing else (`42501`); it cannot insert or delete.
+- Given a team caller (`afs_app` with `afs.team_ids` set, not a service admin), when it selects from or
+  writes to `export_bundles`, then it sees no rows and a write is `42501`; only service admins (and the
+  service roles) read and write bundles, because export and import are `admin:export` and `admin:import`.
+  Given a service admin, then it records exports and imports as `afs_app`.
 
-Proven by: `TestExportBundles` (all subtests).
+Proven by: `TestExportBundles` (all subtests), including `TestExportBundles/team callers cannot see or write
+bundles` and `TestExportBundles/the API creates exports and imports as afs_app`.
+
+**DB-US-34 · Log destinations and notification channels belong to the team.** *(refines US-19; DB-24)* As a
+team-admin, I want my team's log destinations and notification channels to hold configuration and secret
+references only, and to be invisible to other teams.
+- Given a `log_destinations` row, then its credentials are a reference to a team secret (`secret_id`, a
+  composite foreign key on `(team_id, id)`), never a value; `config` holds non-secret settings only. A
+  reference to another team's secret is `23503`, and a secret in use by a destination cannot be deleted
+  (`23503`, `Conflict`).
+- Given a transaction as `afs_app` with `afs.team_ids = team A`, when it selects from `log_destinations` or
+  `notification_channels`, then it sees only team A's rows (the standard `app_team_scope` policy); inserting a row for team B
+  is `42501`; updating or deleting team B's rows changes zero rows.
+- Given a channel used by a report schedule, then deleting it is `23503`.
+
+Proven by: `TestEveryTeamTableHasRowLevelSecurity` (RLS and an `afs_app` policy on both tables);
+`TestReportSchedulesIsolationTierAndIdempotencyKeys/scheduled reports go only to the team's own channels`
+(channel references and delete restriction). Cross-team invisibility, cross-team insert and the
+secret-reference foreign key on `log_destinations` and `notification_channels`: **pending**.
+
+**DB-US-35 · Swarm templates: service admins write, everyone reads.** *(refines US-22; WO-2)* As a service
+admin, I want the swarm template catalog to be writable only by service admins and readable by every
+signed-in caller, so that a team cannot define its own remediation shape.
+- Given an `afs_app` caller that is not a service admin (a team caller), when it inserts a
+  `swarm_templates` row, then `42501`; when it updates or deletes one, then zero rows change; every
+  `afs_app` caller (including security operators) reads every template.
+- Given a service admin, when it inserts a template with a name, kind, spec, budget and time to live, then
+  it is stored; `enabled = false` keeps the row and its revisions (US-22: a work order naming a disabled
+  template is refused by the API with `ValidationError`).
+
+Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/work orders track repositories and notify owners once`
+(service admin creates a template; a team's insert is `42501`; this subtest lives in `migrate_test.go`).
+Zero-row update and delete by a team, and read by a team caller: **pending**.
+
+**DB-US-36 · A deleted team keeps its rows and history.** *(refines US-23; TEAM-9, D53)* As a service admin,
+I want a deleted team to stay as a row with `state = 'deleted'` and its usage, cost, revisions and audit
+to stay readable, so that nothing is lost when its resources go.
+- Given the reconciler records a teardown, when it sets `state = 'deleted'`, `deleted_at`, `torn_down_at`
+  and `teardown_reason`, then the team row and every row that references it remain; nothing is deleted
+  by cascade.
+- Given a deleted team, then a service admin (or `afs_readonly`) can still read its `usage_events`,
+  `cost_daily`, `config_revisions` and `audit_log` rows.
+- `torn_down_at` without a `teardown_reason` on a persistent team is `23514`.
+
+Proven by: `TestSwarmsEphemeralTeamsAndWorkOrders/teams due for teardown` (reconciler records
+`state = 'deleted'`; teardown time without reason `23514`). Reading usage, cost, revisions and audit of a
+deleted team: **pending**.
+
+
+**DB-US-37 · Repository owners resolved from team configuration.** *(refines US-16; WO-1; D38)* As `afs-api`,
+I want to ask the database which team owns a repository that a work order names without an owner, so that a
+CVE reaches the right team without the caller knowing it.
+- A team lists the repositories it owns in its namespace config value `AFS_OWNED_REPOS`, entries
+  `host/owner/repo` or `host/owner/*` separated by commas or whitespace; matching ignores case.
+- `afs.resolve_repo_owners(host, repo)` returns the ids of the teams at the best match. Given team A with
+  `github.com/acme/*` and team B with `github.com/acme/payments-api`, then `acme/payments-api` resolves to
+  team B only (an exact entry beats a wildcard).
+- Given two teams that both list the same wildcard, then it returns both ids, so the API can refuse the
+  ambiguity (`400`, `details.ambiguousRepos`); given no entry, then it returns no row (`details.unownedRepos`).
+- The host must match: an entry for `ghe.example.com/pay/*` does not match `github.com/pay/ledger`.
+- Given a team whose `state` is `deleting` or `deleted`, then its entries are ignored.
+- Given `afs_gateway` (or any role other than `afs_app` and `afs_reconciler`), when it calls the function,
+  then `42501`.
+
+Proven by: `TestResolveRepoOwners` in `migrate/templates_exports_test.go`: `exact entry beats a wildcard`,
+`matching ignores case`, `two wildcards are ambiguous`, `host must match`, `no owner`, `deleted teams own
+nothing`, `only the API and reconciler may call it` (gateway `42501`).
 
 ## 6. Non-functional requirements
 
@@ -560,7 +634,7 @@ Proven by: `TestExportBundles` (all subtests).
 | Id | Question | Owner | Status |
 |---|---|---|---|
 | OQ-4 | When to partition `audit_log` and archive beyond 400 days (the append-only trigger blocks deletion today) | db | Review at 12 months or 50 GB |
-| DB-OQ-1 | RLS backs but does not replace the API's checks. Service-level tables are now guarded (DB-US-17); which remaining service-level rules the API alone enforces (for example `swarm_templates` writes) should be listed in the database contract | db, restapi | Open |
+| DB-OQ-1 | RLS backs but does not replace the API's checks. Service-level tables are now guarded (DB-US-17); which remaining service-level rules the API alone enforces (for example work order creation from a template) should be listed in the database contract | db, restapi | Open |
 | DB-OQ-2 | Retention ownership: the reconciler runs `drop_partitions_older_than` monthly; who owns the audit archive target (S3 bucket, Object Lock) | J / platform | Open |
 | DB-OQ-3 | Reference instance: `db.r7g.large` is the working assumption for DB-US-3 and the connection limits; confirm after the M3 load test | restapi | Open |
 | DB-OQ-4 | `afs.settle_reservation` on an already released hold did not add the actual cost. Resolved: it now takes the budget and period and records the cost on a late settle | db | Resolved (Claude, for J's review) |
