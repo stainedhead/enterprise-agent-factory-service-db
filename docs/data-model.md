@@ -33,6 +33,8 @@ erDiagram
     budgets ||--o{ budget_threshold_events : ""
     teams ||--o{ usage_events : ""
     teams ||--o{ cost_daily : ""
+    agents ||--o{ agent_activity : "samples"
+    agents ||--o{ external_traffic : "flows"
     teams ||--o{ cost_reconciliations : ""
     teams ||--o{ log_destinations : ""
     teams ||--o{ notification_channels : ""
@@ -66,11 +68,17 @@ erDiagram
 | `external_systems` | Catalog of outside services agents may reach | `team_id` NULL = service catalog (service admins write it; every team reads it), set = declared by that team (needs `teams.may_add_external_systems`; `owner` and `purpose` required; cannot reuse a catalog slug); `endpoints` hosts or `*.domain` with optional port, rendered into each agent's egress policy; `enabled` off switches it off at and below its level; `builtin` entries (Atlassian, GitHub, Outlook, Microsoft Teams, Azure, Google, Slack, Okta, OpenAI, OpenRouter) cannot be deleted; category `llm` = non-Bedrock model provider, not metered or capped, seeded off. Replaces `team_egress_rules` (000007) |
 | `external_system_optouts` | Switches a system off for a whole team (`agent_id` NULL) or one agent | Default on; a row only narrows; unique per (team, agent, system) |
 | `agent_external_access` (view) | Effective access per agent and system | `disabled_at` service/team/agent, or NULL when allowed; read by the reconciler and the API |
+| `agent_activity` | One sample per agent per five-minute window (partitioned by month, written by the reconciler's activity collector) | `state` working/idle/paused/stopped/unhealthy/blocked_budget; working = a model call, the agent reporting busy, or CPU above the idle threshold; `active_seconds`, calls, tokens, cost, CPU and memory averages, optional `activity_note`; windows aligned to 5 minutes; non-working windows have no active seconds or calls |
+| `agent_activity_daily` (view) | Time in each state, calls, tokens and cost per agent and day | `utilization_pct` = working ÷ (working + idle) |
+| `agent_activity_current` (view) | Latest state per agent | `idle_since` = end of the last working window when the agent is idle |
+| `external_traffic` | Connections from each agent to outside hosts per five-minute window (partitioned by month, from Cilium flow logs) | `system_id` the catalog or team system matched (NULL when none); `verdict` allowed/denied with `denied_reason` system_off_service/team/agent or not_in_catalog; bytes each way; `requests` and `errors` only where an egress proxy sees HTTP |
+| `external_traffic_daily` (view) | Daily traffic per agent and system (or unmatched host) | Allowed connections, requests, errors, bytes, denied connections and reasons |
+| `team_budget_position` (view) | Current-period budget, spent, reserved and % used per team | Reads the latest `spend_counters` row |
 | `budgets` | One budget per team | `amount_usd ≤ teams.max_budget_usd` (trigger); `period` monthly/lifetime; thresholds; `on_exhaust` block/notify |
 | `spend_counters` | Real-time spend per budget period | `limit_usd`, `spent_usd`, `reserved_usd`; changed only via `reserve_spend` / `settle_spend` |
 | `budget_threshold_events` | Thresholds already crossed per period | PK makes alerts fire once |
 | `usage_events` | Per-request ledger from the gateway | Partitioned monthly by `occurred_at`; `ensure_usage_partition(month)` |
-| `cost_daily` | Daily cost by team/agent/model and source | Sources: gateway, cur_bedrock, cur_eks, cur_other |
+| `cost_daily` | Daily cost by team/agent/model and source | Sources: gateway, cur_bedrock, cur_eks, cur_other; `calls` counts model calls for gateway rows (000008) |
 | `cost_reconciliations` | Gateway estimate vs billed, per team-day | `variance_pct` generated |
 | `log_destinations` | Per-team log delivery | Non-secret config JSON; tokens via `secret_id` |
 | `notification_channels` | Slack, email, webhook, Jira, EventBridge | `team_id NULL` = service-level |

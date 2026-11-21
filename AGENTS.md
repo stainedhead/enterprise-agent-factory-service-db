@@ -16,7 +16,7 @@ root (PRD and `docs/solution-design.md`). Its only code consumer is
 [enterprise-agent-factory-service-restapi](https://github.com/stainedhead/enterprise-agent-factory-service-restapi),
 which imports this module at a released tag and connects as the roles defined here.
 
-Status: schema v1 (migrations 000001–000007) with integration tests for up/down/up, checksums,
+Status: schema v1 (migrations 000001–000008) with integration tests for up/down/up, checksums,
 constraints, spend reservation and row-level security.
 
 ## Toolchain
