@@ -208,13 +208,15 @@ func TestConstraints(t *testing.T) {
 			t.Fatal("update of audit_log succeeded")
 		}
 	})
-	// Configuration values and cost-allocation tags are non-secret by design (000005 and 000010 reject
-	// credential-like names), so their tables and views are exempt from the column-name check.
+	// Configuration values (agents and pools) and cost-allocation tags are non-secret by design
+	// (000005, 000010 and 000012 reject credential-like names), so their tables and views are exempt
+	// from the column-name check.
 	t.Run("no secret value column exists", func(t *testing.T) {
 		var n int
 		_ = conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
 			WHERE table_schema = 'afs' AND column_name ~ '(value|password|plaintext|secret_string)'
 			  AND table_name NOT IN ('service_settings', 'namespace_config_values', 'agent_config_values', 'agent_config_resolved',
+			                         'pool_config_values', 'pool_config_resolved',
 			                         'service_tags', 'team_tags', 'team_effective_tags', 'agent_effective_tags',
 			                         'cost_daily_by_tag', 'agent_activity_daily_by_tag', 'external_traffic_daily_by_tag')`).Scan(&n)
 		if n != 0 {
@@ -1506,9 +1508,9 @@ func TestCostAllocationTags(t *testing.T) {
 	})
 	t.Run("cost, activity and traffic roll up by tag", func(t *testing.T) {
 		if _, err := conn.Exec(ctx, `
-			INSERT INTO afs.cost_daily (team_id, day, source, agent_id, model_id, input_tokens, output_tokens, cost_usd, calls) VALUES
-			 ('`+teamA+`', '2026-11-20', 'gateway', '`+agentA1+`', 'claude-sonnet', 1000, 100, 1.50, 3),
-			 ('`+teamB+`', '2026-11-20', 'gateway', NULL, 'claude-sonnet', 500, 50, 0.50, 1)`); err != nil {
+			INSERT INTO afs.cost_daily (team_id, day, source, agent_id, model_id, input_tokens, output_tokens, cost_usd, calls, tag_set_id) VALUES
+			 ('`+teamA+`', '2026-11-20', 'gateway', '`+agentA1+`', 'claude-sonnet', 1000, 100, 1.50, 3, afs.current_team_tag_set('`+teamA+`')),
+			 ('`+teamB+`', '2026-11-20', 'gateway', NULL, 'claude-sonnet', 500, 50, 0.50, 1, afs.current_team_tag_set('`+teamB+`'))`); err != nil {
 			t.Fatal(err)
 		}
 		var cost float64
@@ -1537,6 +1539,73 @@ func TestCostAllocationTags(t *testing.T) {
 			if _, err := conn.Exec(ctx, `SELECT * FROM `+v+` LIMIT 1`); err != nil {
 				t.Errorf("%s: %v", v, err)
 			}
+		}
+	})
+	t.Run("spend keeps the tags in effect when it happened", func(t *testing.T) {
+		var before string
+		if err := conn.QueryRow(ctx, `SELECT value FROM afs.team_tags WHERE team_id = $1 AND key = 'business-unit'`, teamA).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		if err := setTag(teamA, "business-unit", "platform"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.cost_daily (team_id, day, source, agent_id, model_id, cost_usd, calls, tag_set_id)
+			VALUES ($1, '2026-11-21', 'gateway', $2, 'claude-sonnet', 4.00, 2, afs.current_team_tag_set($1))`, teamA, agentA1); err != nil {
+			t.Fatal(err)
+		}
+		var cost float64
+		if err := conn.QueryRow(ctx, `SELECT coalesce(sum(cost_usd), 0)::float8 FROM afs.cost_daily_by_tag
+			WHERE day = '2026-11-20' AND tag_key = 'business-unit' AND tag_value = $1`, before).Scan(&cost); err != nil || cost != 1.5 {
+			t.Errorf("yesterday under %s: %v, want 1.5 (%v)", before, cost, err)
+		}
+		if err := conn.QueryRow(ctx, `SELECT coalesce(sum(cost_usd), 0)::float8 FROM afs.cost_daily_by_tag
+			WHERE day = '2026-11-21' AND tag_key = 'business-unit' AND tag_value = 'platform'`).Scan(&cost); err != nil || cost != 4 {
+			t.Errorf("today under platform: %v, want 4 (%v)", cost, err)
+		}
+		// Same team, same day, new tags: a second row, not a conflict.
+		if err := setTag(teamA, "business-unit", "payments"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.cost_daily (team_id, day, source, agent_id, model_id, cost_usd, tag_set_id)
+			VALUES ($1, '2026-11-21', 'gateway', $2, 'claude-sonnet', 1.00, afs.current_team_tag_set($1))`, teamA, agentA1); err != nil {
+			t.Errorf("tag change part way through a day: %v", err)
+		}
+	})
+	t.Run("tag sets are per team and immutable", func(t *testing.T) {
+		var setB string
+		if err := conn.QueryRow(ctx, `SELECT afs.current_team_tag_set($1)`, teamB).Scan(&setB); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.cost_daily (team_id, day, source, cost_usd, tag_set_id)
+			VALUES ($1, '2026-11-22', 'gateway', 1, $2)`, teamA, setB); sqlState(err) != "23503" {
+			t.Errorf("another team's tag set on cost: want 23503, got %v", err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.agent_activity (bucket_start, team_id, agent_id, state, tag_set_id)
+			VALUES ('2026-11-22 00:00:00+00', $1, $2, 'idle', $3)`, teamA, agentA1, setB); sqlState(err) != "23503" {
+			t.Errorf("another team's tag set on activity: want 23503, got %v", err)
+		}
+		if _, err := conn.Exec(ctx, `UPDATE afs.tag_sets SET tags = '{}' WHERE id = $1`, setB); sqlState(err) != "55000" {
+			t.Errorf("change a tag set: want 55000, got %v", err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.tag_sets (id, team_id, tags) VALUES ('ts_00000000000000000000000000000000', $1, '{}')`, teamA); sqlState(err) != "23514" {
+			t.Errorf("tag set id not derived from its content: want 23514, got %v", err)
+		}
+		var n int
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamA+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.tag_sets WHERE team_id = $1`, teamB).Scan(&n)
+		}); err != nil || n != 0 {
+			t.Errorf("team A sees %d of team B's tag sets (%v)", n, err)
+		}
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_gateway`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT afs.current_team_tag_set($1)) s`, teamA).Scan(&n)
+		}); err != nil || n != 1 {
+			t.Errorf("gateway builds a tag set: %v", err)
 		}
 	})
 	t.Run("the gateway reads an agent's tags", func(t *testing.T) {
@@ -1628,6 +1697,485 @@ func TestModelPriceProposals(t *testing.T) {
 		}
 		if _, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = '250' WHERE key = 'billing.variance_alert_pct'`); sqlState(err) != "23514" {
 			t.Errorf("variance over 100: want 23514, got %v", err)
+		}
+	})
+}
+
+func TestReportSchedulesIsolationTierAndIdempotencyKeys(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	as := func(team, actor, sql string, args ...any) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			setup := `SET LOCAL ROLE afs_app; SET LOCAL afs.actor = '` + actor + `'; SET LOCAL afs.team_ids = '` + team + `'`
+			if team == "" {
+				setup = `SET LOCAL ROLE afs_app; SET LOCAL afs.actor = '` + actor + `'; SET LOCAL afs.service_admin = 'on'`
+			}
+			if _, err := tx.Exec(ctx, setup); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, sql, args...)
+			return err
+		})
+	}
+	const chA = "nch_01JD3Z5Y8K2M4N6P8Q0R2S4T80"
+	const chB = "nch_01JD3Z5Y8K2M4N6P8Q0R2S4T81"
+	const chSvc = "nch_01JD3Z5Y8K2M4N6P8Q0R2S4T82"
+	if _, err := conn.Exec(ctx, `INSERT INTO afs.notification_channels (id, team_id, name, kind, config) VALUES
+		($1, $4, 'a-email', 'email', '{"to":"a@example.com"}'),
+		($2, $5, 'b-email', 'email', '{"to":"b@example.com"}'),
+		($3, NULL, 'svc-email', 'email', '{"to":"ops@example.com"}')`, chA, chB, chSvc, teamA, teamB); err != nil {
+		t.Fatal(err)
+	}
+	schedule := func(team, id, channel string) error {
+		return as(team, "usr_a", `INSERT INTO afs.report_schedules (id, team_id, name, report, query, cadence, channel_id, next_run_at)
+			VALUES ($1, $2, 'weekly costs '||$1, 'costs', '{"range":"7d","groupBy":"agent"}', 'weekly', $3, now() + interval '1 day')`, id, teamA, channel)
+	}
+
+	t.Run("scheduled reports go only to the team's own channels", func(t *testing.T) {
+		if err := schedule(teamA, "rsc_01JD3Z5Y8K2M4N6P8Q0R2S4T83", chA); err != nil {
+			t.Fatal(err)
+		}
+		if err := schedule(teamA, "rsc_01JD3Z5Y8K2M4N6P8Q0R2S4T84", chB); sqlState(err) != "23503" {
+			t.Errorf("another team's channel: want 23503, got %v", err)
+		}
+		if err := schedule(teamA, "rsc_01JD3Z5Y8K2M4N6P8Q0R2S4T85", chSvc); sqlState(err) != "23503" {
+			t.Errorf("a service-level channel: want 23503, got %v", err)
+		}
+		if err := schedule(teamB, "rsc_01JD3Z5Y8K2M4N6P8Q0R2S4T86", chA); sqlState(err) != "42501" {
+			t.Errorf("team B scheduling for team A: want 42501, got %v", err)
+		}
+		if err := as(teamA, "usr_a", `UPDATE afs.report_schedules SET cadence = 'hourly'`); sqlState(err) != "23514" {
+			t.Errorf("unknown cadence: want 23514, got %v", err)
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM afs.notification_channels WHERE id = $1`, chA); sqlState(err) != "23503" {
+			t.Errorf("delete a channel a schedule uses: want 23503, got %v", err)
+		}
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_billing`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE afs.report_schedules SET last_status = 'sent', last_run_at = now(),
+				next_run_at = next_run_at + interval '7 days'`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `UPDATE afs.report_schedules SET channel_id = $1`, chB)
+			return err
+		}); sqlState(err) != "42501" {
+			t.Errorf("billing may record runs but not redirect a schedule: want 42501, got %v", err)
+		}
+	})
+
+	t.Run("only service admins set the isolation tier", func(t *testing.T) {
+		if err := as(teamA, "usr_a", `UPDATE afs.teams SET isolation_tier = 'dedicated' WHERE id = $1`, teamA); sqlState(err) != "42501" {
+			t.Errorf("team-admin: want 42501, got %v", err)
+		}
+		if err := as("", "usr_admin", `UPDATE afs.teams SET isolation_tier = 'dedicated' WHERE id = $1`, teamA); err != nil {
+			t.Errorf("service admin: %v", err)
+		}
+		if err := as("", "usr_admin", `UPDATE afs.teams SET isolation_tier = 'private' WHERE id = $1`, teamA); sqlState(err) != "23514" {
+			t.Errorf("unknown tier: want 23514, got %v", err)
+		}
+		var tier string
+		if err := conn.QueryRow(ctx, `SELECT isolation_tier FROM afs.teams WHERE id = $1`, teamB).Scan(&tier); err != nil || tier != "shared" {
+			t.Errorf("default tier %q, want shared (%v)", tier, err)
+		}
+	})
+
+	t.Run("idempotency keys belong to their caller and expire", func(t *testing.T) {
+		put := func(actor, key string) error {
+			return as(teamA, actor, `INSERT INTO afs.idempotency_keys (principal, key, team_id, operation, request_sha256, expires_at)
+				VALUES ($1, $2, $3, 'CreateAgent', sha256('body'), now() + interval '1 hour')`, actor, key, teamA)
+		}
+		if err := put("usr_a", "retry-1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := put("usr_a", "retry-1"); sqlState(err) != "23505" {
+			t.Errorf("same key twice: want 23505, got %v", err)
+		}
+		if err := put("usr_b", "retry-1"); err != nil {
+			t.Errorf("another caller may use the same key: %v", err)
+		}
+		if err := as(teamA, "usr_b", `INSERT INTO afs.idempotency_keys (principal, key, operation, request_sha256, expires_at)
+			VALUES ('usr_a', 'forged', 'CreateAgent', sha256('x'), now() + interval '1 hour')`); sqlState(err) != "42501" {
+			t.Errorf("writing a key as someone else: want 42501, got %v", err)
+		}
+		if err := as(teamA, "usr_a", `UPDATE afs.idempotency_keys SET state = 'completed' WHERE key = 'retry-1'`); sqlState(err) != "23514" {
+			t.Errorf("completed without a response: want 23514, got %v", err)
+		}
+		var n int
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.actor = 'usr_b'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.idempotency_keys`).Scan(&n)
+		}); err != nil || n != 1 {
+			t.Errorf("usr_b sees %d keys, want only its own 1 (%v)", n, err)
+		}
+		if _, err := conn.Exec(ctx, `UPDATE afs.idempotency_keys SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
+			WHERE principal = 'usr_b'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_reconciler`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT afs.purge_idempotency_keys()`).Scan(&n)
+		}); err != nil || n != 1 {
+			t.Errorf("purge removed %d, want 1 (%v)", n, err)
+		}
+		var ttl int
+		if err := conn.QueryRow(ctx, `SELECT (value #>> '{}')::int FROM afs.service_settings WHERE key = 'api.idempotency_key_ttl_seconds'`).Scan(&ttl); err != nil || ttl != 3600 {
+			t.Errorf("default ttl %d, want 3600 (%v)", ttl, err)
+		}
+		if _, err := conn.Exec(ctx, `UPDATE afs.service_settings SET value = '5' WHERE key = 'api.idempotency_key_ttl_seconds'`); sqlState(err) != "23514" {
+			t.Errorf("ttl below a minute: want 23514, got %v", err)
+		}
+	})
+}
+
+// role_bindings is exempt: the API reads the caller's bindings to work out which teams it may see,
+// before any team scope exists. Writes to it are service-admin or team-admin API operations.
+func TestEveryTeamTableHasRowLevelSecurity(t *testing.T) {
+	conn := migrated(t)
+	rows, err := conn.Query(t.Context(), `
+		SELECT c.relname FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'afs'
+		WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND NOT c.relrowsecurity
+		  AND c.relname <> 'role_bindings'
+		  AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'team_id' AND NOT a.attisdropped)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		t.Errorf("afs.%s has team_id but no row-level security", name)
+	}
+}
+
+func TestSwarmsEphemeralTeamsAndWorkOrders(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	const swarm = "team_01JD3Z5Y8K2M4N6P8Q0R2S4T90"
+	const poolScan = "pool_01JD3Z5Y8K2M4N6P8Q0R2S4T91"
+	const poolFix = "pool_01JD3Z5Y8K2M4N6P8Q0R2S4T92"
+	exec := func(sql string, args ...any) error { _, err := conn.Exec(ctx, sql, args...); return err }
+	tx := func(setup, sql string, args ...any) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if setup != "" {
+				if _, err := tx.Exec(ctx, setup); err != nil {
+					return err
+				}
+			}
+			_, err := tx.Exec(ctx, sql, args...)
+			return err
+		})
+	}
+	newSwarm := `INSERT INTO afs.teams (id, slug, display_name, kind, cost_center, owner_email, max_budget_usd, expires_at, teardown_rule, allowed_aws_accounts)
+		VALUES ('` + swarm + `', 'cve-2026-1234', 'CVE swarm', 'ephemeral', 'CC900', 'sec@example.com', 500, now() + interval '7 days', 'at_work_complete', '{payments-*}')`
+	budget := `INSERT INTO afs.budgets (id, team_id, period, amount_usd, on_exhaust) VALUES ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4T93', '` + swarm + `', 'lifetime', 300, 'block')`
+
+	t.Run("an ephemeral team needs a blocking lifetime budget and a bounded expiry", func(t *testing.T) {
+		if err := tx("", newSwarm); sqlState(err) != "23514" {
+			t.Errorf("ephemeral team without budget: want 23514, got %v", err)
+		}
+		if err := tx("", newSwarm+`; `+strings.Replace(budget, "'block'", "'notify'", 1)); sqlState(err) != "23514" {
+			t.Errorf("lifetime budget that only notifies: want 23514, got %v", err)
+		}
+		if err := tx("", strings.Replace(newSwarm, "7 days", "400 days", 1)+`; `+budget); sqlState(err) != "23514" {
+			t.Errorf("expiry beyond teams.ephemeral_max_days: want 23514, got %v", err)
+		}
+		if err := tx("", strings.Replace(newSwarm, "'at_work_complete'", "NULL", 1)+`; `+budget); sqlState(err) != "23514" {
+			t.Errorf("ephemeral team without teardown rule: want 23514, got %v", err)
+		}
+		if err := tx("", newSwarm+`; `+budget); err != nil {
+			t.Fatalf("team and budget in one transaction: %v", err)
+		}
+		if err := tx("", `DELETE FROM afs.budgets WHERE team_id = $1`, swarm); sqlState(err) != "23514" {
+			t.Errorf("remove the lifetime budget: want 23514, got %v", err)
+		}
+		if err := exec(`UPDATE afs.teams SET kind = 'persistent' WHERE id = $1`, swarm); sqlState(err) != "55000" {
+			t.Errorf("change kind: want 55000, got %v", err)
+		}
+		if err := exec(`UPDATE afs.teams SET teardown_rule = 'at_expiry' WHERE id = $1`, teamA); sqlState(err) != "23514" {
+			t.Errorf("teardown rule on a persistent team: want 23514, got %v", err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamA+`'`,
+			`UPDATE afs.teams SET viewer_kubectl = true WHERE id = $1`, teamA); sqlState(err) != "42501" {
+			t.Errorf("team-admin granting viewer kubectl: want 42501, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.team_models (team_id, model_id) VALUES ($1, 'claude-sonnet')`, swarm); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("pools live only in swarms and share the agent name space", func(t *testing.T) {
+		pool := func(id, team, name string) error {
+			return exec(`INSERT INTO afs.agent_pools (id, team_id, name, template, image, model_id, workers)
+				VALUES ($1, $2, $3, 'omp-fix', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet', 5)`, id, team, name)
+		}
+		if err := pool("pool_01JD3Z5Y8K2M4N6P8Q0R2S4T94", teamA, "scanners"); sqlState(err) != "23514" {
+			t.Errorf("pool in a persistent team: want 23514, got %v", err)
+		}
+		if err := pool(poolScan, swarm, "scanner"); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool(poolFix, swarm, "fixer"); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`INSERT INTO afs.agents (id, team_id, name, template, image, model_id)
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T95', $1, 'scanner', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet')`, swarm); sqlState(err) != "23505" {
+			t.Errorf("agent named like a pool: want 23505, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.agents (id, team_id, name, template, image, model_id)
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T96', $1, 'reviewer', 'omp', 'ghcr.io/x/omp@sha256:abc', 'claude-sonnet')`, swarm); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool("pool_01JD3Z5Y8K2M4N6P8Q0R2S4T97", swarm, "reviewer"); sqlState(err) != "23505" {
+			t.Errorf("pool named like an agent: want 23505, got %v", err)
+		}
+		if err := exec(`UPDATE afs.agent_pools SET name = 'scan' WHERE id = $1`, poolScan); sqlState(err) != "55000" {
+			t.Errorf("rename a pool: want 55000, got %v", err)
+		}
+		if err := exec(`UPDATE afs.agent_pools SET workers = 500 WHERE id = $1`, poolScan); sqlState(err) != "23514" {
+			t.Errorf("too many workers: want 23514, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.pool_handoffs (team_id, from_pool_id, to_pool_id) VALUES ($1, $2, $3)`, swarm, poolScan, poolFix); err != nil {
+			t.Errorf("handoff: %v", err)
+		}
+		if err := exec(`INSERT INTO afs.pool_handoffs (team_id, from_pool_id, to_pool_id) VALUES ($1, $2, $2)`, swarm, poolScan); sqlState(err) != "23514" {
+			t.Errorf("handoff to itself: want 23514, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.agent_identities (id, team_id, pool_id, kind) VALUES ('aid_01JD3Z5Y8K2M4N6P8Q0R2S4T98', $1, $2, 'aws_iam_role')`, swarm, poolFix); err != nil {
+			t.Errorf("pool identity: %v", err)
+		}
+	})
+
+	t.Run("pool secrets have their own path and bind only to their pool", func(t *testing.T) {
+		const secFix = "sec_01JD3Z5Y8K2M4N6P8Q0R2S4T99"
+		if err := exec(`INSERT INTO afs.secrets (id, team_id, pool_id, name, secrets_manager_arn, origin) VALUES ($1, $2, $3, 'gh-token',
+			'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-cve-2026-1234/fixer/gh-token-AbCdEf', 'managed')`, secFix, swarm, poolFix); err != nil {
+			t.Fatal(err)
+		}
+		var path string
+		if err := conn.QueryRow(ctx, `SELECT path FROM afs.secrets WHERE id = $1`, secFix).Scan(&path); err != nil || path != "afs/afs-t-cve-2026-1234/fixer/gh-token" {
+			t.Errorf("pool secret path %q (%v)", path, err)
+		}
+		if err := exec(`INSERT INTO afs.pool_secret_bindings (team_id, pool_id, secret_id, delivery, target) VALUES ($1, $2, $3, 'env', 'GH_TOKEN')`, swarm, poolScan, secFix); sqlState(err) != "23514" {
+			t.Errorf("another pool's secret: want 23514, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target) VALUES ($1, 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4T96', $2, 'env', 'GH_TOKEN')`, swarm, secFix); sqlState(err) != "23514" {
+			t.Errorf("agent bound to a pool's secret: want 23514, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.pool_secret_bindings (team_id, pool_id, secret_id, delivery, target) VALUES ($1, $2, $3, 'env', 'GH_TOKEN')`, swarm, poolFix, secFix); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`INSERT INTO afs.pool_config_values (id, team_id, pool_id, name, source, config_value)
+			VALUES ('pcv_01JD3Z5Y8K2M4N6P8Q0R2S4TA0', $1, $2, 'GH_TOKEN', 'literal', 'x')`, swarm, poolFix); sqlState(err) != "23505" {
+			t.Errorf("config value shadowing a secret env var: want 23505, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.pool_config_values (id, team_id, pool_id, name, source)
+			VALUES ('pcv_01JD3Z5Y8K2M4N6P8Q0R2S4TA1', $1, $2, 'LOG_LEVEL', 'namespace')`, swarm, poolFix); sqlState(err) != "23503" {
+			t.Errorf("link to a missing namespace value: want 23503, got %v", err)
+		}
+	})
+
+	t.Run("a pool uses one shared role name in allowed accounts", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.org_aws_accounts (id, name, status) VALUES
+			('444455556666', 'payments-prod', 'active'), ('555566667777', 'payments-dev', 'active'), ('777788889999', 'hr-prod', 'active')`); err != nil {
+			t.Fatal(err)
+		}
+		link := func(id, account, role, profile string) error {
+			return exec(`INSERT INTO afs.pool_role_links (id, team_id, pool_id, account_id, role_name, profile_name, external_id)
+				VALUES ($1, $2, $3, $4, $5, $6, 'afs-'||md5($1))`, id, swarm, poolFix, account, role, profile)
+		}
+		if err := link("prl_01JD3Z5Y8K2M4N6P8Q0R2S4TA2", "444455556666", "afs-cve-remediation", "payments-prod"); err != nil {
+			t.Fatal(err)
+		}
+		var arn string
+		if err := conn.QueryRow(ctx, `SELECT role_arn FROM afs.pool_role_links WHERE id = 'prl_01JD3Z5Y8K2M4N6P8Q0R2S4TA2'`).Scan(&arn); err != nil || arn != "arn:aws:iam::444455556666:role/afs-cve-remediation" {
+			t.Errorf("role arn %q (%v)", arn, err)
+		}
+		if err := link("prl_01JD3Z5Y8K2M4N6P8Q0R2S4TA3", "555566667777", "other-role", "payments-dev"); sqlState(err) != "23514" {
+			t.Errorf("second role name: want 23514, got %v", err)
+		}
+		if err := link("prl_01JD3Z5Y8K2M4N6P8Q0R2S4TA4", "777788889999", "afs-cve-remediation", "hr-prod"); sqlState(err) != "23514" {
+			t.Errorf("account outside the team's filter: want 23514, got %v", err)
+		}
+	})
+
+	t.Run("usage and activity are attributed to the pool and the worker pod", func(t *testing.T) {
+		act := func(pool, pod, agent any, state string) error {
+			return exec(`INSERT INTO afs.agent_activity (bucket_start, team_id, agent_id, pool_id, worker_pod, state)
+				VALUES ('2026-11-21 10:00:00+00', $1, $2, $3, $4, $5)`, swarm, agent, pool, pod, state)
+		}
+		if err := act(poolFix, "fixer-7c9d5-abcde", nil, "working"); err != nil {
+			t.Fatal(err)
+		}
+		if err := act(poolFix, "fixer-7c9d5-fghij", nil, "idle"); err != nil {
+			t.Fatal(err)
+		}
+		if err := act(poolFix, nil, nil, "idle"); sqlState(err) != "23514" {
+			t.Errorf("pool row without worker pod: want 23514, got %v", err)
+		}
+		if err := act(poolFix, "fixer-x", "agt_01JD3Z5Y8K2M4N6P8Q0R2S4T96", "idle"); sqlState(err) != "23514" {
+			t.Errorf("row for both agent and pool: want 23514, got %v", err)
+		}
+		if err := act(poolFix, "fixer-7c9d5-abcde", nil, "idle"); sqlState(err) != "23505" {
+			t.Errorf("same worker, same window twice: want 23505, got %v", err)
+		}
+		var reporting, working int
+		if err := conn.QueryRow(ctx, `SELECT reporting_workers, working_workers FROM afs.pool_workers_current WHERE pool_id = $1`, poolFix).
+			Scan(&reporting, &working); err != nil || reporting != 2 || working != 1 {
+			t.Errorf("pool workers: reporting %d working %d (%v)", reporting, working, err)
+		}
+		if err := exec(`INSERT INTO afs.usage_events (occurred_at, team_id, pool_id, worker_pod, model_id, request_id, outcome)
+			VALUES (now(), $1, $2, 'fixer-7c9d5-abcde', 'claude-sonnet', 'req-1', 'ok')`, swarm, poolFix); err != nil {
+			t.Errorf("usage by a pool worker: %v", err)
+		}
+		if err := exec(`INSERT INTO afs.usage_events (occurred_at, team_id, pool_id, model_id, request_id, outcome)
+			VALUES (now(), $1, $2, 'claude-sonnet', 'req-2', 'ok')`, swarm, poolFix); sqlState(err) != "23514" {
+			t.Errorf("pool usage without the worker pod: want 23514, got %v", err)
+		}
+	})
+
+	const wo = "wo_01JD3Z5Y8K2M4N6P8Q0R2S4TA5"
+	const swt = "swt_01JD3Z5Y8K2M4N6P8Q0R2S4TA6"
+	security := `SET LOCAL ROLE afs_app; SET LOCAL afs.actor = 'usr_sec'; SET LOCAL afs.security_operator = 'on'`
+	t.Run("security operators are a service-level role", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.role_bindings (id, role, team_id, subject_type, group_name) VALUES ('rb_01JD3Z5Y8K2M4N6P8Q0R2S4TA7', 'security_operator', $1, 'group', 'sec')`, teamA); sqlState(err) != "23514" {
+			t.Errorf("team-scoped security operator: want 23514, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.role_bindings (id, role, subject_type, group_name) VALUES ('rb_01JD3Z5Y8K2M4N6P8Q0R2S4TA8', 'security_operator', 'group', 'sec')`); err != nil {
+			t.Errorf("service-level security operator: %v", err)
+		}
+		if err := exec(`INSERT INTO afs.api_keys (id, team_id, name, role, key_prefix, key_sha256, expires_at)
+			VALUES ('key_01JD3Z5Y8K2M4N6P8Q0R2S4TA9', NULL, 'scanner', 'team_admin', 'afsk_1', sha256('k1'), now() + interval '1 day')`); sqlState(err) != "23514" {
+			t.Errorf("service-level team key: want 23514, got %v", err)
+		}
+		if err := exec(`INSERT INTO afs.api_keys (id, team_id, name, role, key_prefix, key_sha256, expires_at)
+			VALUES ('key_01JD3Z5Y8K2M4N6P8Q0R2S4TB0', NULL, 'scanner', 'security_operator', 'afsk_2', sha256('k2'), now() + interval '1 day')`); err != nil {
+			t.Errorf("security tooling key: %v", err)
+		}
+	})
+
+	t.Run("work orders track repositories and notify owners once", func(t *testing.T) {
+		if err := tx(`SET LOCAL ROLE afs_app; SET LOCAL afs.service_admin = 'on'`, `INSERT INTO afs.swarm_templates (id, name, kind, spec, budget_usd, ttl_hours)
+			VALUES ($1, 'cve-remediation', 'cve_remediation', '{"pools":[{"name":"fixer","workers":5}]}', 300, 168)`, swt); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamA+`'`, `INSERT INTO afs.swarm_templates (id, name, kind, spec, budget_usd, ttl_hours)
+			VALUES ('swt_01JD3Z5Y8K2M4N6P8Q0R2S4TB1', 'mine', 'general', '{"pools":[]}', 10, 1)`); sqlState(err) != "42501" {
+			t.Errorf("team defining a template: want 42501, got %v", err)
+		}
+		if err := tx(security, `INSERT INTO afs.work_orders (id, kind, external_ref, title, sla_due_at, template_id, budget_usd, severity)
+			VALUES ($1, 'cve_remediation', 'CVE-2026-1234', 'Patch libfoo', now() + interval '24 hours', $2, 300, 'critical')`, wo, swt); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx(security, `INSERT INTO afs.work_orders (id, kind, external_ref, title, sla_due_at, template_id)
+			VALUES ('wo_01JD3Z5Y8K2M4N6P8Q0R2S4TB2', 'cve_remediation', 'CVE-2026-1234', 'dup', now() + interval '1 day', $1)`, swt); sqlState(err) != "23505" {
+			t.Errorf("second open work order for the same CVE: want 23505, got %v", err)
+		}
+		fromEvent := func(id, cve string) error {
+			return tx(`SET LOCAL ROLE afs_reconciler`, `INSERT INTO afs.work_orders (id, kind, external_ref, title, sla_due_at, template_id, source, source_event_id)
+				VALUES ($1, 'cve_remediation', $2, 'from EventBridge', now() + interval '3 days', $3, 'eventbridge', 'evt-1')`, id, cve, swt)
+		}
+		if err := fromEvent("wo_01JD3Z5Y8K2M4N6P8Q0R2S4TB3", "CVE-2026-9999"); err != nil {
+			t.Fatal(err)
+		}
+		if err := fromEvent("wo_01JD3Z5Y8K2M4N6P8Q0R2S4TB4", "CVE-2026-9998"); sqlState(err) != "23505" {
+			t.Errorf("same EventBridge event twice: want 23505, got %v", err)
+		}
+		for _, r := range [][]any{{"acme/payments-api", teamA, nil}, {"acme/legacy-batch", nil, "batch-owners@example.com"}} {
+			if err := tx(security, `INSERT INTO afs.work_order_repos (work_order_id, repo, owning_team_id, owning_contact) VALUES ($1, $2, $3, $4)`,
+				wo, r[0], r[1], r[2]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx(security, `INSERT INTO afs.work_order_repos (work_order_id, repo) VALUES ($1, 'acme/orphan')`, wo); sqlState(err) != "23514" {
+			t.Errorf("repository with no owner: want 23514, got %v", err)
+		}
+		if err := exec(`UPDATE afs.work_orders SET status = 'assigned' WHERE id = $1`, wo); sqlState(err) != "23514" {
+			t.Errorf("assigned without a team: want 23514, got %v", err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_reconciler`, `UPDATE afs.work_orders SET status = 'assigned', team_id = $2, assigned_at = now() WHERE id = $1`, wo, swarm); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_reconciler`, `UPDATE afs.work_order_repos SET status = 'pr_opened' WHERE repo = 'acme/payments-api'`); sqlState(err) != "23514" {
+			t.Errorf("pr_opened without a URL: want 23514, got %v", err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_reconciler`, `UPDATE afs.work_order_repos SET status = 'pr_opened', pr_url = 'https://github.com/acme/payments-api/pull/42', pr_number = 42
+			WHERE repo = 'acme/payments-api'`); err != nil {
+			t.Fatal(err)
+		}
+		notify := `INSERT INTO afs.work_order_notifications (work_order_id, host, repo, kind, recipient) VALUES ($1, 'github.com', 'acme/payments-api', 'pr_opened', 'team:payments')`
+		if err := tx(`SET LOCAL ROLE afs_reconciler`, notify, wo); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_reconciler`, notify, wo); sqlState(err) != "23505" {
+			t.Errorf("second identical notification: want 23505, got %v", err)
+		}
+		var repos, open int
+		var sla string
+		if err := conn.QueryRow(ctx, `SELECT repos, prs_open, sla_state FROM afs.work_order_progress WHERE work_order_id = $1`, wo).Scan(&repos, &open, &sla); err != nil ||
+			repos != 2 || open != 1 || sla != "due_soon" {
+			t.Errorf("progress: repos %d open %d sla %q (%v)", repos, open, sla, err)
+		}
+	})
+
+	t.Run("work orders are visible to security, the assigned team and owning teams only", func(t *testing.T) {
+		see := func(setup string) (orders, repos int) {
+			t.Helper()
+			if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, setup); err != nil {
+					return err
+				}
+				if err := tx.QueryRow(ctx, `SELECT count(*) FROM afs.work_orders WHERE id = $1`, wo).Scan(&orders); err != nil {
+					return err
+				}
+				return tx.QueryRow(ctx, `SELECT count(*) FROM afs.work_order_repos WHERE work_order_id = $1`, wo).Scan(&repos)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if o, r := see(security); o != 1 || r != 2 {
+			t.Errorf("security sees %d/%d, want 1/2", o, r)
+		}
+		if o, r := see(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + swarm + `'`); o != 1 || r != 2 {
+			t.Errorf("assigned team sees %d/%d, want 1/2", o, r)
+		}
+		if o, r := see(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + teamA + `'`); o != 1 || r != 1 {
+			t.Errorf("owning team sees %d/%d, want 1/1 (its own repository)", o, r)
+		}
+		if o, r := see(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '` + teamB + `'`); o != 0 || r != 0 {
+			t.Errorf("unrelated team sees %d/%d, want 0/0", o, r)
+		}
+		if err := tx(`SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`, `INSERT INTO afs.work_orders (id, kind, title, team_id)
+			VALUES ('wo_01JD3Z5Y8K2M4N6P8Q0R2S4TB5', 'general', 'x', $1)`, teamA); sqlState(err) != "42501" {
+			t.Errorf("team B creating a work order for team A: want 42501, got %v", err)
+		}
+	})
+
+	t.Run("teams due for teardown", func(t *testing.T) {
+		if err := exec(`UPDATE afs.work_orders SET status = 'done', completed_at = now() WHERE id = $1`, wo); err != nil {
+			t.Fatal(err)
+		}
+		var reason string
+		if err := conn.QueryRow(ctx, `SELECT reason FROM afs.teams_due_for_teardown WHERE team_id = $1`, swarm).Scan(&reason); err != nil || reason != "work_complete" {
+			t.Errorf("teardown reason %q (%v)", reason, err)
+		}
+		if err := tx(`SET LOCAL ROLE afs_reconciler`, `UPDATE afs.teams SET state = 'deleted', deleted_at = now(), torn_down_at = now(), teardown_reason = 'work_complete' WHERE id = $1`, swarm); err != nil {
+			t.Errorf("record teardown: %v", err)
+		}
+		if err := exec(`UPDATE afs.teams SET torn_down_at = now() WHERE id = $1`, teamA); sqlState(err) != "23514" {
+			t.Errorf("teardown time without reason on a persistent team: want 23514, got %v", err)
 		}
 	})
 }
