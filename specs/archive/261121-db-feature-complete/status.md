@@ -9,8 +9,8 @@
 | 2 | Research and data modeling | Complete |
 | 3 | Architecture and planning | Complete |
 | 4 | Task breakdown | Complete |
-| 5 | Implementation | In Progress |
-| 6 | Completion and archival | Not Started |
+| 5 | Implementation | Complete |
+| 6 | Completion and archival | Complete |
 
 ## Phase 0 tasks
 - [x] Spec created from PRD
@@ -25,4 +25,6 @@ None.
 - 2026-11-21 spec reviewed (implementation-ready); tasks T1–T9 defined.
 - 2026-11-21 T1 done: lock timeout, runner error paths (coverage 96.2%).
 - 2026-11-21 T2–T7 done: pending proofs written; four gaps fixed in 000015.
+- 2026-11-21 Docs updated (step 4); review PRD written and finalized (steps 5–6).
+- 2026-11-21 Archived to specs/archive/ (step 7); 100% complete.
 - 2026-11-21 T8 done: PRD Proven-by lines name the real tests; no repo-owned pending left.
