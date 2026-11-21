@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -1019,7 +1020,7 @@ func TestEgressRulesBecomeTeamSystems(t *testing.T) {
 		('egr_01JD3Z5Y8K2M4N6P8Q0R2S4T61', $1, 'nexus.corp.example', 8443, 'artifacts')`, teamA); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := migrate.Up(ctx, conn, migs); err != nil {
+	if _, err := migrate.Up(ctx, conn, migs[:7]); err != nil {
 		t.Fatal(err)
 	}
 	var eps []string
@@ -1038,4 +1039,215 @@ func TestEgressRulesBecomeTeamSystems(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT count(*) FROM afs.team_egress_rules WHERE team_id = $1`, teamA).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("rules after down = %d (err %v)", n, err)
 	}
+}
+
+func TestAgentActivityReporting(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	exec := func(sql string, args ...any) error {
+		_, err := conn.Exec(ctx, sql, args...)
+		return err
+	}
+	sample := func(at, agent, state string, active, calls int) error {
+		return exec(`INSERT INTO afs.agent_activity (bucket_start, team_id, agent_id, state, active_seconds, model_calls, input_tokens, cost_usd)
+			VALUES ($1, $2, $3, $4, $5, $6, $6 * 1000, $6 * 0.01)`, at, teamA, agent, state, active, calls)
+	}
+	if _, err := conn.Exec(ctx, `SELECT afs.ensure_activity_partition('2026-11-01')`); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("samples are five-minute windows with consistent states", func(t *testing.T) {
+		if err := sample("2026-11-20 10:02:00+00", agentA1, "working", 120, 1); sqlState(err) != "23514" {
+			t.Errorf("unaligned window: want check_violation, got %v", err)
+		}
+		if err := sample("2026-11-20 10:00:00+00", agentA1, "idle", 60, 0); sqlState(err) != "23514" {
+			t.Errorf("idle with active seconds: want check_violation, got %v", err)
+		}
+		if err := sample("2026-11-20 10:00:00+00", agentA1, "paused", 0, 3); sqlState(err) != "23514" {
+			t.Errorf("paused with calls: want check_violation, got %v", err)
+		}
+		if err := sample("2026-11-20 10:00:00+00", agentA1, "sleeping", 0, 0); sqlState(err) != "23514" {
+			t.Errorf("unknown state: want check_violation, got %v", err)
+		}
+		if err := sample("2026-11-20 10:00:00+00", agentA1, "working", 301, 1); sqlState(err) != "23514" {
+			t.Errorf("active > window: want check_violation, got %v", err)
+		}
+	})
+
+	// agentA1: 3 working, 1 idle, 1 paused, then idle again. agentA2: idle throughout.
+	for _, s := range []struct {
+		at, agent, state string
+		active, calls    int
+	}{
+		{"2026-11-20 10:00:00+00", agentA1, "working", 240, 4},
+		{"2026-11-20 10:05:00+00", agentA1, "working", 300, 6},
+		{"2026-11-20 10:10:00+00", agentA1, "working", 60, 1},
+		{"2026-11-20 10:15:00+00", agentA1, "idle", 0, 0},
+		{"2026-11-20 10:20:00+00", agentA1, "paused", 0, 0},
+		{"2026-11-20 10:25:00+00", agentA1, "idle", 0, 0},
+		{"2026-11-20 10:00:00+00", agentA2, "idle", 0, 0},
+		{"2026-11-20 10:05:00+00", agentA2, "idle", 0, 0},
+	} {
+		if err := sample(s.at, s.agent, s.state, s.active, s.calls); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sample("2026-11-20 10:00:00+00", agentA1, "idle", 0, 0); sqlState(err) != "23505" {
+		t.Errorf("second sample for a window: want unique_violation, got %v", err)
+	}
+
+	t.Run("daily rollup gives time in state and utilization", func(t *testing.T) {
+		var working, idle, off, active, calls int64
+		var util float64
+		if err := conn.QueryRow(ctx, `SELECT working_seconds, idle_seconds, off_seconds, active_seconds, model_calls, utilization_pct
+			FROM afs.agent_activity_daily WHERE agent_id = $1 AND day = '2026-11-20'`, agentA1).
+			Scan(&working, &idle, &off, &active, &calls, &util); err != nil {
+			t.Fatal(err)
+		}
+		if working != 900 || idle != 600 || off != 300 || active != 600 || calls != 11 || util != 60.0 {
+			t.Fatalf("working=%d idle=%d off=%d active=%d calls=%d util=%v", working, idle, off, active, calls, util)
+		}
+		var util2 float64
+		if err := conn.QueryRow(ctx, `SELECT utilization_pct FROM afs.agent_activity_daily WHERE agent_id = $1`, agentA2).Scan(&util2); err != nil || util2 != 0 {
+			t.Fatalf("idle agent utilization = %v (err %v)", util2, err)
+		}
+	})
+	t.Run("current state shows how long an idle agent has been idle", func(t *testing.T) {
+		var state string
+		var idleSince time.Time
+		if err := conn.QueryRow(ctx, `SELECT state, idle_since FROM afs.agent_activity_current WHERE agent_id = $1`, agentA1).
+			Scan(&state, &idleSince); err != nil {
+			t.Fatal(err)
+		}
+		if want := time.Date(2026, 11, 20, 10, 15, 0, 0, time.UTC); state != "idle" || !idleSince.Equal(want) {
+			t.Fatalf("state=%s idle_since=%v, want idle since %v", state, idleSince, want)
+		}
+	})
+	t.Run("daily cost rollup carries call counts", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.cost_daily (team_id, day, source, agent_id, model_id, input_tokens, output_tokens, cost_usd, calls)
+			VALUES ($1, '2026-11-20', 'gateway', $2, 'claude-sonnet', 11000, 2000, 0.11, 11)`, teamA, agentA1); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`UPDATE afs.cost_daily SET calls = -1 WHERE team_id = $1`, teamA); sqlState(err) != "23514" {
+			t.Fatalf("negative calls: want check_violation, got %v", err)
+		}
+	})
+	t.Run("budget position reports the current period", func(t *testing.T) {
+		if err := exec(`INSERT INTO afs.budgets (id, team_id, period, amount_usd) VALUES ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4T60', $1, 'monthly', 1000)`, teamA); err != nil {
+			t.Fatal(err)
+		}
+		if err := exec(`INSERT INTO afs.spend_counters (budget_id, period_start, limit_usd, spent_usd, reserved_usd) VALUES
+			  ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4T60', '2026-10-01', 1000, 990, 0),
+			  ('bud_01JD3Z5Y8K2M4N6P8Q0R2S4T60', '2026-11-01', 1000, 412.5, 3)`); err != nil {
+			t.Fatal(err)
+		}
+		var pct float64
+		if err := conn.QueryRow(ctx, `SELECT used_pct FROM afs.team_budget_position WHERE team_id = $1`, teamA).Scan(&pct); err != nil || pct != 41.3 {
+			t.Fatalf("used_pct = %v (err %v)", pct, err)
+		}
+	})
+	t.Run("another team cannot see activity or write it", func(t *testing.T) {
+		var n int
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.agent_activity_daily WHERE team_id = $1`, teamA).Scan(&n)
+		})
+		if err != nil || n != 0 {
+			t.Fatalf("team B sees %d team A activity rows (err %v)", n, err)
+		}
+		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamA+`'`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO afs.agent_activity (bucket_start, team_id, agent_id, state) VALUES ('2026-11-20 11:00:00+00', $1, $2, 'idle')`, teamA, agentA1)
+			return err
+		})
+		if sqlState(err) != "42501" {
+			t.Fatalf("API writing activity: want insufficient_privilege, got %v", err)
+		}
+	})
+}
+
+func TestExternalTrafficReporting(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+	const github = "ext_01JDX0000000000000000000A2"
+	const openai = "ext_01JDX0000000000000000000A9"
+	flow := func(at, system, host, verdict, reason string, conns, reqs, errs int) error {
+		var sys, rsn, rq any
+		if system != "" {
+			sys = system
+		}
+		if reason != "" {
+			rsn = reason
+		}
+		if reqs >= 0 {
+			rq = reqs
+		}
+		_, err := conn.Exec(ctx, `INSERT INTO afs.external_traffic (bucket_start, team_id, agent_id, system_id, host, port, verdict, denied_reason,
+			connections, requests, errors, bytes_out, bytes_in)
+			VALUES ($1, $2, $3, $4, $5, 443, $6, $7, $8, $9, $10, $8 * 1000, $8 * 5000)`,
+			at, teamA, agentA1, sys, host, verdict, rsn, conns, rq, errs)
+		return err
+	}
+	t.Run("flows are validated", func(t *testing.T) {
+		if err := flow("2026-11-20 10:01:00+00", github, "api.github.com", "allowed", "", 1, 1, 0); sqlState(err) != "23514" {
+			t.Errorf("unaligned window: want 23514, got %v", err)
+		}
+		if err := flow("2026-11-20 10:00:00+00", github, "api.github.com", "allowed", "system_off_team", 1, 1, 0); sqlState(err) != "23514" {
+			t.Errorf("allowed with a denial reason: want 23514, got %v", err)
+		}
+		if err := flow("2026-11-20 10:00:00+00", "", "pastebin.example", "denied", "", 1, -1, 0); sqlState(err) != "23514" {
+			t.Errorf("denied without a reason: want 23514, got %v", err)
+		}
+		if err := flow("2026-11-20 10:00:00+00", "", "Bad Host", "denied", "not_in_catalog", 1, -1, 0); sqlState(err) != "23514" {
+			t.Errorf("bad host: want 23514, got %v", err)
+		}
+	})
+	for _, f := range []struct {
+		at, sys, host, verdict, reason string
+		conns, reqs, errs              int
+	}{
+		{"2026-11-20 10:00:00+00", github, "api.github.com", "allowed", "", 12, 40, 1},
+		{"2026-11-20 10:05:00+00", github, "api.github.com", "allowed", "", 8, 25, 0},
+		{"2026-11-20 10:05:00+00", openai, "api.openai.com", "denied", "system_off_service", 3, -1, 0},
+		{"2026-11-20 10:10:00+00", "", "pastebin.example", "denied", "not_in_catalog", 2, -1, 0},
+	} {
+		if err := flow(f.at, f.sys, f.host, f.verdict, f.reason, f.conns, f.reqs, f.errs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("daily rollup by system with denied attempts", func(t *testing.T) {
+		var conns, reqs, errs, denied int64
+		if err := conn.QueryRow(ctx, `SELECT connections, requests, errors, denied_connections FROM afs.external_traffic_daily
+			WHERE agent_id = $1 AND system_id = $2`, agentA1, github).Scan(&conns, &reqs, &errs, &denied); err != nil {
+			t.Fatal(err)
+		}
+		if conns != 20 || reqs != 65 || errs != 1 || denied != 0 {
+			t.Fatalf("github: conns=%d reqs=%d errs=%d denied=%d", conns, reqs, errs, denied)
+		}
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM afs.external_traffic_daily
+			WHERE team_id = $1 AND denied_connections > 0`, teamA).Scan(&n); err != nil || n != 2 {
+			t.Fatalf("denied rows = %d (err %v)", n, err)
+		}
+	})
+	t.Run("another team cannot see traffic", func(t *testing.T) {
+		var n int
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.external_traffic`).Scan(&n)
+		})
+		if err != nil || n != 0 {
+			t.Fatalf("team B sees %d rows (err %v)", n, err)
+		}
+	})
 }
