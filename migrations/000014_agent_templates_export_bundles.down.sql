@@ -1,6 +1,9 @@
 -- Reverses 000014. Step 3 fails if an import row or an unfinished export (no s3_uri or sha256) exists;
 -- remove such rows first. Down migrations are for local use and tests.
 
+-- 4. Repository owners
+DROP FUNCTION afs.resolve_repo_owners(text, text);
+
 -- 3. Export and import bundles
 DROP POLICY service_roles_all ON afs.export_bundles;
 DROP POLICY app_admin_all ON afs.export_bundles;

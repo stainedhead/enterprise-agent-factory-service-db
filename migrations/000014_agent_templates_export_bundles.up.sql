@@ -151,3 +151,29 @@ CREATE POLICY service_roles_all ON afs.export_bundles TO afs_reconciler, afs_gat
 -- The reconciler builds the bundle and records the outcome.
 GRANT UPDATE (status, summary, finished_at, s3_uri, sha256, download_url, download_expires_at, size_bytes)
   ON afs.export_bundles TO afs_reconciler;
+
+-- 4. Repository owners from team configuration (D38, revised by J) --------------------------------
+-- A team declares the repositories it owns in its namespace configuration value AFS_OWNED_REPOS:
+-- entries separated by commas or whitespace, each host/owner/repo or host/owner/* (case-insensitive).
+-- afs-api resolves a work order repository given without an explicit owner through this function:
+-- exact entries win over wildcards; it returns every team at the best match, so the API can refuse an
+-- ambiguous owner. Teams being deleted or deleted are skipped. SECURITY DEFINER because a security
+-- operator cannot read other teams' configuration through row-level security; it returns team ids only.
+CREATE FUNCTION afs.resolve_repo_owners(p_host text, p_repo text) RETURNS SETOF text
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, afs AS $$
+  WITH entries AS (
+    SELECT v.team_id, lower(e) AS entry
+      FROM afs.namespace_config_values v
+      JOIN afs.teams t ON t.id = v.team_id AND t.state IN ('active', 'suspended'),
+           regexp_split_to_table(btrim(v.config_value), '[\s,]+') AS e
+     WHERE v.name = 'AFS_OWNED_REPOS' AND e <> ''
+  ), matches AS (
+    SELECT team_id, CASE WHEN entry = lower(p_host || '/' || p_repo) THEN 2 ELSE 1 END AS rank
+      FROM entries
+     WHERE entry = lower(p_host || '/' || p_repo)
+        OR entry = lower(p_host || '/' || split_part(p_repo, '/', 1) || '/*')
+  )
+  SELECT DISTINCT team_id FROM matches WHERE rank = (SELECT max(rank) FROM matches) ORDER BY team_id
+$$;
+REVOKE EXECUTE ON FUNCTION afs.resolve_repo_owners(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION afs.resolve_repo_owners(text, text) TO afs_app, afs_reconciler;

@@ -420,3 +420,72 @@ func TestExportBundles(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveRepoOwners(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	if _, err := conn.Exec(ctx, `INSERT INTO afs.namespace_config_values (id, team_id, name, config_value) VALUES
+		('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4TH1', $1, 'AFS_OWNED_REPOS', 'github.com/acme/payments-api, github.com/acme/*
+		 ghe.example.com/pay/ledger'),
+		('ncv_01JD3Z5Y8K2M4N6P8Q0R2S4TH2', $2, 'AFS_OWNED_REPOS', 'github.com/Acme/search github.com/acme/*')`, teamA, teamB); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(host, repo string) []string {
+		t.Helper()
+		var ids []string
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.actor = 'usr_01JD3Z5Y8K2M4N6P8Q0R2S4TC5'; SET LOCAL afs.security_operator = 'on'`); err != nil {
+				return err
+			}
+			rows, err := tx.Query(ctx, `SELECT afs.resolve_repo_owners($1, $2)`, host, repo)
+			if err != nil {
+				return err
+			}
+			ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	cases := []struct {
+		name, host, repo string
+		want             []string
+	}{
+		{"exact entry beats a wildcard", "github.com", "acme/payments-api", []string{teamA}},
+		{"matching ignores case", "github.com", "ACME/search", []string{teamB}},
+		{"two wildcards are ambiguous", "github.com", "acme/other", []string{teamA, teamB}},
+		{"host must match", "ghe.example.com", "pay/ledger", []string{teamA}},
+		{"no owner", "github.com", "elsewhere/x", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolve(c.host, c.repo)
+			if strings.Join(got, ",") != strings.Join(c.want, ",") {
+				t.Errorf("resolve(%s, %s) = %v, want %v", c.host, c.repo, got, c.want)
+			}
+		})
+	}
+	t.Run("deleted teams own nothing", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `UPDATE afs.teams SET state = 'deleted', deleted_at = now() WHERE id = $1`, teamB); err != nil {
+			t.Fatal(err)
+		}
+		if got := resolve("github.com", "acme/other"); strings.Join(got, ",") != teamA {
+			t.Errorf("got %v, want only %s", got, teamA)
+		}
+	})
+	t.Run("only the API and reconciler may call it", func(t *testing.T) {
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_gateway`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `SELECT afs.resolve_repo_owners('github.com', 'acme/x')`)
+			return err
+		})
+		if sqlState(err) != "42501" {
+			t.Errorf("gateway: want 42501, got %v", err)
+		}
+	})
+}
