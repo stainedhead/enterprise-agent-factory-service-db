@@ -104,7 +104,7 @@ CI runs the integration tests against a `postgres:17` service container.
 
 ## Agent workflow
 
-1. **Understand:** the PRD, solution design §8, `docs/data-model.md` and the active spec.
+1. **Understand:** this repository's PRD (`enterprise-agent-factory-service-db-PRD.md`), the shared contracts in the root's `docs/contracts/`, the root PRD, solution design §8, `docs/data-model.md` and the active spec.
 2. **Plan:** tables, constraints, policies and grants affected; consumers in `-restapi`.
 3. **Red → Green → Refactor** with integration tests.
 4. **Quality gate:** `make gate` and `make test-db`.
