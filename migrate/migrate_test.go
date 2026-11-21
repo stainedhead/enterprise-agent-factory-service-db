@@ -450,3 +450,95 @@ func TestSecretPathsAreManaged(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentPersistentStorage(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	seedTeams(t, conn)
+	seedAgents(t, conn)
+
+	t.Run("agents get a default volume", func(t *testing.T) {
+		var size, keep int
+		var class, onDelete, sched string
+		err := conn.QueryRow(ctx, `SELECT storage_size_gib, storage_class, storage_on_delete, snapshot_schedule, snapshot_retain_count
+			FROM afs.agents WHERE id = $1`, agentA1).Scan(&size, &class, &onDelete, &sched, &keep)
+		if err != nil || size != 20 || class != "gp3" || onDelete != "snapshot_then_delete" || sched != "daily" || keep != 7 {
+			t.Fatalf("defaults = %d %s %s %s %d, err %v", size, class, onDelete, sched, keep, err)
+		}
+	})
+	t.Run("volume can grow", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `UPDATE afs.agents SET storage_size_gib = 50 WHERE id = $1`, agentA1); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("volume cannot shrink", func(t *testing.T) {
+		_, err := conn.Exec(ctx, `UPDATE afs.agents SET storage_size_gib = 10 WHERE id = $1`, agentA1)
+		if sqlState(err) != "55000" {
+			t.Fatalf("want object_not_in_prerequisite_state, got %v", err)
+		}
+	})
+	t.Run("storage class is immutable", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `INSERT INTO afs.storage_classes (id, volume_type) VALUES ('io2-fast', 'io2')`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := conn.Exec(ctx, `UPDATE afs.agents SET storage_class = 'io2-fast' WHERE id = $1`, agentA1)
+		if sqlState(err) != "55000" {
+			t.Fatalf("want object_not_in_prerequisite_state, got %v", err)
+		}
+	})
+	t.Run("disabled storage class rejected for new agents", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, `UPDATE afs.storage_classes SET enabled = false WHERE id = 'io2-fast'`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := conn.Exec(ctx, `INSERT INTO afs.agents (id, team_id, name, template, image, model_id, storage_class)
+			VALUES ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4T6X', $1, 'new-agent', 't', 'x@sha256:a', 'claude-sonnet', 'io2-fast')`, teamA)
+		if sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+	})
+	t.Run("bad settings rejected", func(t *testing.T) {
+		for _, set := range []string{"storage_size_gib = 2000", "storage_on_delete = 'keep'", "snapshot_schedule = 'hourly'", "snapshot_retain_count = 0"} {
+			if _, err := conn.Exec(ctx, `UPDATE afs.agents SET `+set+` WHERE id = $1`, agentA2); sqlState(err) != "23514" {
+				t.Errorf("%s: want check_violation, got %v", set, err)
+			}
+		}
+	})
+	t.Run("completed snapshot needs an EBS id", func(t *testing.T) {
+		_, err := conn.Exec(ctx, `INSERT INTO afs.agent_volume_snapshots (id, team_id, agent_id, reason, state)
+			VALUES ('vsnap_01JD3Z5Y8K2M4N6P8Q0R2S4T6V', $1, $2, 'scheduled', 'completed')`, teamA, agentA1)
+		if sqlState(err) != "23514" {
+			t.Fatalf("want check_violation, got %v", err)
+		}
+	})
+	t.Run("app requests manual snapshots for its own team only", func(t *testing.T) {
+		as := func(teams, reason, id, team string) error {
+			return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teams+`'`); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `INSERT INTO afs.agent_volume_snapshots (id, team_id, agent_id, reason) VALUES ($1, $2, $3, $4)`,
+					id, team, agentA1, reason)
+				return err
+			})
+		}
+		if err := as(teamA, "manual", "vsnap_01JD3Z5Y8K2M4N6P8Q0R2S4T60", teamA); err != nil {
+			t.Fatalf("own team manual snapshot: %v", err)
+		}
+		if err := as(teamA, "scheduled", "vsnap_01JD3Z5Y8K2M4N6P8Q0R2S4T61", teamA); sqlState(err) != "42501" {
+			t.Fatalf("app writing a scheduled snapshot: want 42501, got %v", err)
+		}
+		if err := as(teamB, "manual", "vsnap_01JD3Z5Y8K2M4N6P8Q0R2S4T62", teamA); sqlState(err) != "42501" {
+			t.Fatalf("other team: want 42501, got %v", err)
+		}
+		var n int
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_app; SET LOCAL afs.team_ids = '`+teamB+`'`); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM afs.agent_volume_snapshots`).Scan(&n)
+		})
+		if err != nil || n != 0 {
+			t.Fatalf("team B sees %d team A snapshots (err %v)", n, err)
+		}
+	})
+}
