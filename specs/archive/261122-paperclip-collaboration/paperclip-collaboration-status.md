@@ -6,7 +6,7 @@
 **Review PRD:** paperclip-collaboration-auto-review-PRD.md (now in the review spec)
 **Review spec:** specs/archive/261122-paperclip-collaboration/261122-paperclip-collaboration-auto-review
 **Process Start:** 2026-11-22T18:35:00Z
-**Process End:** —
+**Process End:** 2026-11-22 (step 14 commit; see git log)
 **Total Runtime:** —
 
 ## Step Summary
@@ -24,8 +24,8 @@
 | 9  | Implement Review Fixes          | ✅ Complete | 2026-11-22T19:06:32Z | 2026-11-22T19:09:41Z | 3 |
 | 10 | Archive Fixes Spec              | ✅ Complete | 2026-11-22T19:09:41Z | 2026-11-22T19:09:47Z | 0 |
 | 11 | Final Quality Pass              | ✅ Complete | 2026-11-22T19:09:47Z | 2026-11-22T19:11:00Z | 1 |
-| 12 | Process Analysis Report         | ⬜ Pending | — | — | — |
-| 13 | Archive Spec                    | ⬜ Pending | — | — | — |
+| 12 | Process Analysis Report         | ✅ Complete | 2026-11-22T19:11:00Z | 2026-11-22T19:12:00Z | 1 |
+| 13 | Archive Spec                    | ✅ Complete | 2026-11-22T19:12:00Z | 2026-11-22T19:12:30Z | 0 |
 | 14 | Write PR body (PR opened by the coordinator) | ⬜ Pending | — | — | — |
 
 Timing: step boundaries are the git commit timestamps (authoritative); runtimes are rounded to minutes and sub-minute steps show 0.
