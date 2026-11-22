@@ -642,3 +642,273 @@ func context_withTimeout(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
 	return context.WithTimeout(t.Context(), 2*time.Second)
 }
+
+// DB-US-57: a swarm template that names a collaboration agent gets one with its team.
+func TestSwarmCollaboration(t *testing.T) {
+	conn := migrated(t)
+	ctx := t.Context()
+	const reconciler = "SET LOCAL ROLE afs_reconciler; SET LOCAL afs.actor = 'system:afs-reconciler'"
+	tplOff, tplPlain := cid("tpl", 2), cid("tpl", 3)
+	spec := func(collab string) string {
+		return `{"costCenter": "CC900", "ownerEmail": "secops@example.com",` + collab + `
+		  "pools": [{"name": "fixer", "template": "omp", "image": "ghcr.io/x/omp@` + collabDigest + `", "modelId": "claude-sonnet", "workers": 1}]}`
+	}
+	swt := func(n int) string { return cid("swt", n) }
+	wo := func(n int) string { return cid("wo", n) }
+	mustExec(t, conn, `
+INSERT INTO afs.models (id, provider, display_name) VALUES ('claude-sonnet', 'Anthropic', 'Claude Sonnet');
+INSERT INTO afs.agent_templates (id, name, harness, allowed_image_digests, current_image_digest, capabilities, enabled) VALUES
+ ('`+tplCollab+`', 'paperclip', 'paperclip', ARRAY['`+collabDigest+`'], '`+collabDigest+`', '{paperclip}', true),
+ ('`+tplOff+`', 'paperclip-off', 'paperclip', ARRAY['`+collabDigest+`'], '`+collabDigest+`', '{paperclip}', false),
+ ('`+tplPlain+`', 'omp', 'omp', ARRAY['`+collabDigest+`'], '`+collabDigest+`', '{}', true)`)
+	swarms := []struct {
+		n    int
+		spec string
+	}{
+		{1, spec(`"collaboration": {"templateId": "` + tplCollab + `"},`)},
+		{2, spec(`"collaboration": {"templateId": "` + tplCollab + `", "image": "ghcr.io/y/paperclip@` + collabDigest + `"},`)},
+		{3, spec(`"collaboration": {"templateId": "` + tplOff + `"},`)},
+		{4, spec(`"collaboration": {"templateId": "` + tplPlain + `"},`)},
+		{5, spec(`"collaboration": {"templateId": "tpl_01JD3Z5Y8K2M4N6P8Q0R2S9999"},`)},
+		{6, spec(``)},
+		{7, `{"costCenter": "CC900", "ownerEmail": "secops@example.com", "collaboration": {"templateId": "` + tplCollab + `"}, "pools": []}`},
+		{8, spec(`"collaboration": {},`)},
+	}
+	for _, s := range swarms {
+		mustExec(t, conn, `INSERT INTO afs.swarm_templates (id, name, kind, spec, budget_usd, ttl_hours, teardown_rule, enabled)
+			VALUES ($1, $2, 'general', $3, 100, 24, 'at_expiry', true)`, swt(s.n), fmt.Sprintf("sw%d", s.n), s.spec)
+		mustExec(t, conn, `INSERT INTO afs.work_orders (id, kind, title, template_id) VALUES ($1, 'general', 'wo', $2)`, wo(s.n), swt(s.n))
+	}
+	instantiate := func(n int) (string, error) {
+		var team string
+		err := in(t, conn, reconciler, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT afs.instantiate_work_order_team($1)`, wo(n)).Scan(&team)
+		})
+		return team, err
+	}
+
+	var team, agent string
+	t.Run("collaboration agent created with the team", func(t *testing.T) {
+		var err error
+		team, err = instantiate(1)
+		wantOK(t, err)
+		got := queryRow(t, conn, `SELECT id, name, role, template, template_id, model_id, iam_identity, image, state, snapshot_schedule
+			FROM afs.agents WHERE team_id = $1 AND role = 'collaboration'`, team)
+		agent = got[0]
+		want := []string{agent, "paperclip", "collaboration", "paperclip", tplCollab, "claude-sonnet", "dedicated", "ghcr.io/x/omp@" + collabDigest, "enabled", "daily"}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Fatalf("agent %v, want %v", got, want)
+		}
+		if n := count(t, conn, `SELECT count(*) FROM afs.team_collaboration WHERE team_id = $1 AND agent_id = $2 AND web_ui_enabled AND NOT rest_api_enabled`, team, agent); n != 1 {
+			t.Fatalf("team_collaboration rows %d", n)
+		}
+	})
+	t.Run("agent.created event and audit", func(t *testing.T) {
+		if n := count(t, conn, `SELECT count(*) FROM afs.outbox_events WHERE event_type = 'agent.created' AND aggregate_id = $1 AND team_id = $2
+			AND payload -> 'data' ->> 'agentId' = $1`, agent, team); n != 1 {
+			t.Fatalf("agent.created events %d", n)
+		}
+		if got := scalar[string](t, conn, "", `SELECT after ->> 'collaborationAgentId' FROM afs.audit_log WHERE action = 'InstantiateWorkOrderTeam' AND team_id = $1`, team); got != agent {
+			t.Fatalf("audit names %q", got)
+		}
+	})
+	t.Run("explicit image wins", func(t *testing.T) {
+		team2, err := instantiate(2)
+		wantOK(t, err)
+		if got := scalar[string](t, conn, "", `SELECT image FROM afs.agents WHERE team_id = $1 AND role = 'collaboration'`, team2); got != "ghcr.io/y/paperclip@"+collabDigest {
+			t.Fatalf("image %q", got)
+		}
+	})
+	t.Run("boot secrets recorded against the agent", func(t *testing.T) {
+		arnOf := func(name string) string {
+			return scalar[string](t, conn, "", `SELECT 'arn:aws:secretsmanager:us-east-1:111122223333:secret:' || afs.secret_path($1, $2, NULL, $3) || '-AbCdEf'`, team, agent, name)
+		}
+		for name, env := range map[string]string{ //nolint:gosec // secret names and environment variable names, no values
+			"paperclip-better-auth-secret":         "BETTER_AUTH_SECRET",
+			"paperclip-tool-action-signing-secret": "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+			"paperclip-secrets-master-key":         "PAPERCLIP_SECRETS_MASTER_KEY",
+		} {
+			var id string
+			err := in(t, conn, reconciler, func(tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT afs.record_work_order_secret($1, $2, $3, '', $4, 'env', $5)`,
+					wo(1), agent, name, arnOf(name), env).Scan(&id)
+			})
+			wantOK(t, err)
+			if got := queryRow(t, conn, `SELECT s.managed_by, s.origin, b.delivery, b.target FROM afs.secrets s
+				JOIN afs.agent_secret_bindings b ON b.secret_id = s.id WHERE s.id = $1`, id); strings.Join(got, "|") != "afs|managed|env|"+env {
+				t.Fatalf("%s: %v", name, got)
+			}
+		}
+		again := func(name, delivery, target string) error {
+			return in(t, conn, reconciler, func(tx pgx.Tx) error {
+				_, err := tx.Exec(ctx, `SELECT afs.record_work_order_secret($1, $2, $3, '', $4, $5, $6)`, wo(1), agent, name, arnOf(name), delivery, target)
+				return err
+			})
+		}
+		wantOK(t, again("paperclip-better-auth-secret", "env", "BETTER_AUTH_SECRET"))
+		if n := count(t, conn, `SELECT count(*) FROM afs.secrets WHERE agent_id = $1`, agent); n != 3 {
+			t.Fatalf("idempotent call made %d secrets", n)
+		}
+		wantState(t, again("gh-token", "env", "GH_TOKEN"), "23514")
+		wantState(t, again("paperclip-better-auth-secret", "file", "BETTER_AUTH_SECRET"), "23514")
+		wantState(t, again("paperclip-better-auth-secret", "env", "OTHER"), "23514")
+	})
+	t.Run("the agent id must be this team's collaboration agent", func(t *testing.T) {
+		wrk := cid("agt", 40)
+		mustExec(t, conn, `INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES ($1, $2, 'worker-x', 'omp', 'ghcr.io/x/img@`+collabDigest+`', 'claude-sonnet')`, wrk, team)
+		err := in(t, conn, reconciler, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `SELECT afs.record_work_order_secret($1, $2, 'paperclip-better-auth-secret', '', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/x/y-AbCdEf', 'env', 'BETTER_AUTH_SECRET')`, wo(1), wrk)
+			return err
+		})
+		wantState(t, err, "23514")
+		err = in(t, conn, reconciler, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `SELECT afs.record_work_order_secret($1, $2, 'paperclip-better-auth-secret', '', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/x/y-AbCdEf', 'env', 'BETTER_AUTH_SECRET')`, wo(1), cid("agt", 41))
+			return err
+		})
+		wantState(t, err, "23514")
+	})
+	refused := map[string]struct {
+		n     int
+		state string
+	}{
+		"disabled collaboration template":    {3, "23514"},
+		"template without the capability":    {4, "23514"},
+		"unknown collaboration template":     {5, "23514"},
+		"collaboration without a templateId": {8, "23514"},
+		"no pool to take the model from":     {7, "23514"},
+	}
+	for name, c := range refused {
+		t.Run("refused: "+name, func(t *testing.T) {
+			_, err := instantiate(c.n)
+			wantState(t, err, c.state)
+			if n := count(t, conn, `SELECT count(*) FROM afs.teams WHERE kind = 'ephemeral'`); n != 2 {
+				t.Fatalf("a failed instantiate left %d teams", n)
+			}
+			if st := scalar[string](t, conn, "", `SELECT status FROM afs.work_orders WHERE id = $1`, wo(c.n)); st != "open" {
+				t.Fatalf("work order %s", st)
+			}
+		})
+	}
+	t.Run("a template without collaboration is unchanged", func(t *testing.T) {
+		team6, err := instantiate(6)
+		wantOK(t, err)
+		if n := count(t, conn, `SELECT count(*) FROM afs.agents WHERE team_id = $1`, team6) + count(t, conn, `SELECT count(*) FROM afs.team_collaboration WHERE team_id = $1`, team6); n != 0 {
+			t.Fatalf("%d collaboration rows", n)
+		}
+	})
+}
+
+// queryRow returns the columns of the first row as text, NULL for null, as the superuser.
+func queryRow(t *testing.T, conn *pgx.Conn, sql string, args ...any) []string {
+	t.Helper()
+	rows, err := conn.Query(t.Context(), sql, args...)
+	wantOK(t, err)
+	defer rows.Close()
+	if !rows.Next() {
+		wantOK(t, rows.Err())
+		t.Fatalf("no row: %s", sql)
+	}
+	vals, err := rows.Values()
+	wantOK(t, err)
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		if v == nil {
+			out[i] = "NULL"
+		} else {
+			out[i] = fmt.Sprint(v)
+		}
+	}
+	return out
+}
+
+// DB-US-1 for the new team-owned tables: a team sees and writes only its own rows.
+func TestCollaborationRowLevelSecurity(t *testing.T) {
+	conn := newCollab(t)
+	withCollab(t, conn)
+	mustExec(t, conn, `
+INSERT INTO afs.agent_collaboration (team_id, agent_id, connect) VALUES ('`+teamA+`', '`+wrkA+`', true), ('`+teamB+`', '`+wrkB+`', true);
+INSERT INTO afs.collaboration_access (bucket_start, team_id, surface, principal_kind, principal_id, outcome, requests) VALUES
+ (date_trunc('hour', now()), '`+teamA+`', 'web_ui', 'anonymous', '', 'allowed', 1),
+ (date_trunc('hour', now()), '`+teamB+`', 'web_ui', 'anonymous', '', 'allowed', 1);
+INSERT INTO afs.collab_hostname_holds (slug, team_id, held_until) VALUES
+ ('gone-a', '`+teamA+`', now() + interval '1 day'), ('gone-b', '`+teamB+`', now() + interval '1 day')`)
+	asA := "SET LOCAL afs.team_ids = '" + teamA + "'"
+	tables := []struct{ name, key string }{
+		{"team_collaboration", "team_id"}, {"agent_collaboration", "team_id"},
+		{"collaboration_access", "team_id"}, {"collab_hostname_holds", "team_id"},
+	}
+	for _, tb := range tables {
+		t.Run(tb.name, func(t *testing.T) {
+			own, err := queryAs(t, conn, "afs_app", asA, `SELECT `+tb.key+` FROM afs.`+tb.name)
+			wantOK(t, err)
+			if len(own) != 1 || own[0] != teamA {
+				t.Fatalf("team A sees %v", own)
+			}
+			none, err := queryAs(t, conn, "afs_app", "", `SELECT `+tb.key+` FROM afs.`+tb.name)
+			wantOK(t, err)
+			if len(none) != 0 {
+				t.Fatalf("no team context sees %v", none)
+			}
+			all, err := queryAs(t, conn, "afs_app", "SET LOCAL afs.service_admin = 'on'", `SELECT `+tb.key+` FROM afs.`+tb.name)
+			wantOK(t, err)
+			if len(all) != 2 {
+				t.Fatalf("service admin sees %v", all)
+			}
+			ro, err := queryAs(t, conn, "afs_readonly", "", `SELECT `+tb.key+` FROM afs.`+tb.name)
+			wantOK(t, err)
+			if len(ro) != 2 {
+				t.Fatalf("afs_readonly sees %v", ro)
+			}
+		})
+	}
+	t.Run("team A cannot write team B's rows", func(t *testing.T) {
+		for _, sql := range []string{
+			`UPDATE afs.team_collaboration SET web_ui_enabled = false WHERE team_id = '` + teamB + `'`,
+			`UPDATE afs.agent_collaboration SET connect = false WHERE team_id = '` + teamB + `'`,
+		} {
+			tag, err := execTag(t, conn, "afs_app", asA, sql)
+			wantOK(t, err)
+			if tag != 0 {
+				t.Errorf("%s changed %d rows", sql, tag)
+			}
+		}
+		for _, sql := range []string{
+			`INSERT INTO afs.agent_collaboration (team_id, agent_id, connect) VALUES ('` + teamB + `', '` + wrkB + `', true)`,
+		} {
+			err := runAs(t, conn, "afs_app", asA, sql)
+			if err == nil {
+				t.Errorf("%s was allowed", sql)
+			}
+		}
+		if n := count(t, conn, `SELECT count(*) FROM afs.team_collaboration WHERE team_id = $1 AND web_ui_enabled`, teamB); n != 1 {
+			t.Fatal("team B's settings changed")
+		}
+	})
+	t.Run("holds and access counts are read-only for the app", func(t *testing.T) {
+		for _, sql := range []string{
+			`INSERT INTO afs.collab_hostname_holds (slug, team_id, held_until) VALUES ('x', '` + teamA + `', now())`,
+			`DELETE FROM afs.collab_hostname_holds`,
+			`UPDATE afs.collab_hostname_holds SET held_until = now()`,
+			`DELETE FROM afs.collaboration_access`,
+			`DELETE FROM afs.team_collaboration`,
+			`DELETE FROM afs.agent_collaboration`,
+		} {
+			wantState(t, runAs(t, conn, "afs_app", asA, sql), "42501")
+		}
+	})
+}
+
+// execTag runs a statement under a role and returns the rows it affected.
+func execTag(t *testing.T, conn *pgx.Conn, role, extra, sql string, args ...any) (int64, error) {
+	t.Helper()
+	var n int64
+	err := pgx.BeginFunc(t.Context(), conn, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(t.Context(), "SET LOCAL ROLE "+role+"; SET LOCAL afs.actor = 'usr_test'"+orEmpty(extra)); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(t.Context(), sql, args...)
+		n = tag.RowsAffected()
+		return err
+	})
+	return n, err
+}

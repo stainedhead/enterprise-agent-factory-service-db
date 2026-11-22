@@ -468,6 +468,13 @@ COMMENT ON TABLE afs.collab_hostname_holds IS
   'Slugs of deleted teams that had a collaboration agent, held so a new team cannot take over old links. No foreign key.';
 GRANT SELECT ON afs.collab_hostname_holds TO afs_app, afs_readonly;
 GRANT SELECT, DELETE ON afs.collab_hostname_holds TO afs_reconciler;
+-- The slug of a deleted team is not secret, but the row names the team, so it follows the team-scope rule.
+-- The two trigger functions below are SECURITY DEFINER (the table owner bypasses row-level security), so a
+-- new team's insert still sees every hold.
+ALTER TABLE afs.collab_hostname_holds ENABLE ROW LEVEL SECURITY;
+CREATE POLICY app_team_scope ON afs.collab_hostname_holds FOR SELECT TO afs_app USING (afs.caller_sees_team(team_id));
+CREATE POLICY service_roles_all ON afs.collab_hostname_holds TO afs_billing, afs_gateway, afs_readonly, afs_reconciler
+  USING (true) WITH CHECK (true);
 
 CREATE FUNCTION afs.teams_collab_hold() RETURNS trigger
   LANGUAGE plpgsql SECURITY DEFINER
@@ -894,6 +901,10 @@ CREATE TABLE afs.collab_edge_handoffs (
 );
 ALTER TABLE afs.collab_edge_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE afs.collab_edge_handoffs ENABLE ROW LEVEL SECURITY;
+-- No role has a grant; the explicit deny policy states the intent and satisfies the rule that every
+-- row-level-security table has a policy for afs_app. Only the SECURITY DEFINER functions below reach the rows.
+CREATE POLICY deny_all ON afs.collab_edge_sessions TO afs_app USING (false) WITH CHECK (false);
+CREATE POLICY deny_all ON afs.collab_edge_handoffs TO afs_app USING (false) WITH CHECK (false);
 COMMENT ON TABLE afs.collab_edge_sessions IS 'Server-side sessions of the collaboration edge, keyed by the SHA-256 of the cookie id. No grant to any role.';
 COMMENT ON TABLE afs.collab_edge_handoffs IS 'Single-use 60 second handoff codes (hashed) from the apex callback to a team host. No grant to any role.';
 

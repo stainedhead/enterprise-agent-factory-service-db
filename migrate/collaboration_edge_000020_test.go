@@ -4,6 +4,8 @@ package migrate_test
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -484,7 +486,7 @@ func TestEdgePrincipalKey(t *testing.T) {
 	t.Run("no hash in the result", func(t *testing.T) {
 		rows, err := edgeRows(t, conn, `SELECT * FROM afs.collab_principal_key($1, $2)`, teamA, sha("key-1"))
 		wantOK(t, err)
-		if strings.Contains(rows[0], "afs_k_xx") || strings.Contains(rows[0], fmt.Sprint(sha("key-1"))) {
+		if strings.Contains(rows[0], "afs_k_xx") || strings.Contains(rows[0], hex.EncodeToString(sha("key-1"))) {
 			t.Fatalf("leak: %s", rows[0])
 		}
 		if n := len(strings.Split(rows[0], "|")); n != 5 {
@@ -873,7 +875,7 @@ func TestEdgeSessions(t *testing.T) {
 					mu.Lock()
 					winners++
 					mu.Unlock()
-				} else if err != pgx.ErrNoRows {
+				} else if !errors.Is(err, pgx.ErrNoRows) {
 					t.Errorf("consume: %v", err)
 				}
 			}()

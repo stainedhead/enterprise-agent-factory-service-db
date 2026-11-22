@@ -5,12 +5,12 @@ package migrate_test
 import (
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgconn"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // collabARN builds the ARN Secrets Manager would assign below a team's namespace path.
