@@ -152,7 +152,7 @@ func TestEdgeRole(t *testing.T) {
 	})
 	t.Run("functions return only their named columns", func(t *testing.T) {
 		want := map[string]string{
-			"collab_routes":          "team_id slug namespace hostname team_state agent_id agent_state web_ui_enabled rest_api_enabled web_ui_effective rest_api_effective may_expose ready not_ready_reason service_name port provider_id issuer_url groups_claim collab_client_id collab_client_secret_arn",
+			"collab_routes":          "team_id slug namespace hostname team_state agent_id agent_state web_ui_enabled rest_api_enabled web_ui_effective rest_api_effective may_expose ready not_ready_reason service_name port provider_id issuer_url groups_claim collab_client_id collab_client_secret_arn provider_client_id provider_cli_client_id",
 			"collab_settings":        "key value",
 			"collab_principal":       "binding_id role subject_type user_id",
 			"collab_principal_key":   "key_id role state expires_at revoked_at",
@@ -264,6 +264,21 @@ func TestEdgeRoutes(t *testing.T) {
 			t.Fatalf("default provider for team B: %v", got)
 		}
 		mustExec(t, conn, `UPDATE afs.teams SET identity_provider_id = NULL WHERE id = $1`, teamA)
+	})
+	// Security finding 6 (000021): the edge accepts REST bearer tokens minted for the team IdP's own clients.
+	t.Run("routes: provider client ids for bearer audiences", func(t *testing.T) {
+		mustExec(t, conn, `UPDATE afs.identity_providers SET cli_client_id = 'cli-public' WHERE id = $1`, idpP1)
+		got := routeCols(t, conn, `team_id, provider_id, provider_client_id, coalesce(provider_cli_client_id, 'NULL')`)
+		if got[0] != teamA+"|"+idpP1+"|console|cli-public" || got[1] != teamB+"|"+idpP1+"|console|cli-public" {
+			t.Fatalf("default provider with both clients: %v", got)
+		}
+		mustExec(t, conn, `UPDATE afs.teams SET identity_provider_id = $2 WHERE id = $1`, teamA, idpP2)
+		got = routeCols(t, conn, `provider_id, provider_client_id, coalesce(provider_cli_client_id, 'NULL')`)
+		if got[0] != idpP2+"|console2|NULL" {
+			t.Fatalf("team provider without a CLI client: %v", got)
+		}
+		mustExec(t, conn, `UPDATE afs.teams SET identity_provider_id = NULL WHERE id = $1`, teamA)
+		mustExec(t, conn, `UPDATE afs.identity_providers SET cli_client_id = NULL WHERE id = $1`, idpP1)
 	})
 	t.Run("routes: deleted and unconfigured teams omitted", func(t *testing.T) {
 		mustExec(t, conn, `INSERT INTO afs.teams (id, slug, display_name, cost_center, owner_email, max_budget_usd) VALUES ($1, 'plain', 'Plain', 'CC1', 'p@example.com', 10)`, cid("team", 3))
