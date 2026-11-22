@@ -4,7 +4,7 @@
 **Spec:** specs/archive/261122-paperclip-collaboration (archived at step 7)
 **Branch:** claude/project-thread-xqpqky
 **Review PRD:** paperclip-collaboration-auto-review-PRD.md (now in the review spec)
-**Review spec:** specs/261122-paperclip-collaboration-auto-review
+**Review spec:** specs/archive/261122-paperclip-collaboration/261122-paperclip-collaboration-auto-review
 **Process Start:** 2026-11-22T18:35:00Z
 **Process End:** —
 **Total Runtime:** —
@@ -22,8 +22,8 @@
 | 7  | Archive Original Spec           | ✅ Complete | 2026-11-22T19:50:00Z | 2026-11-22T19:53:00Z | 3 |
 | 8  | Spec Review Fixes               | ✅ Complete | 2026-11-22T19:53:00Z | 2026-11-22T19:58:00Z | 5 |
 | 9  | Implement Review Fixes          | ✅ Complete | 2026-11-22T19:58:00Z | 2026-11-22T20:20:00Z | 22 |
-| 10 | Archive Fixes Spec              | 🔄 In Progress | 2026-11-22T20:20:00Z | — | — |
-| 11 | Final Quality Pass              | ⬜ Pending | — | — | — |
+| 10 | Archive Fixes Spec              | ✅ Complete | 2026-11-22T20:20:00Z | 2026-11-22T20:22:00Z | 2 |
+| 11 | Final Quality Pass              | 🔄 In Progress | 2026-11-22T20:22:00Z | — | — |
 | 12 | Process Analysis Report         | ⬜ Pending | — | — | — |
 | 13 | Archive Spec                    | ⬜ Pending | — | — | — |
 | 14 | Write PR body (PR opened by the coordinator) | ⬜ Pending | — | — | — |

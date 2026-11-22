@@ -10,7 +10,7 @@ Created 2026-11-22. Parent dashboard: `specs/archive/261122-paperclip-collaborat
 | 3 Architecture and planning | Complete |
 | 4 Task breakdown | Complete |
 | 5 Implementation | Complete (6/6 tasks) |
-| 6 Completion and archival | Not Started |
+| 6 Completion and archival | Complete (archived at step 10, nested in the parent archive) |
 
 ## Recent activity
 - 2026-11-22: FR-1 to FR-6 implemented test-first (each new test failed first); gate green, migrate coverage 96.5% on PostgreSQL 16.

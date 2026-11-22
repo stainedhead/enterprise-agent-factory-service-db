@@ -1,6 +1,6 @@
 # Spec: paperclip-collaboration-auto-review
 
-Source PRD: `specs/261122-paperclip-collaboration-auto-review/paperclip-collaboration-auto-review-PRD.md`. Parent spec: `specs/archive/261122-paperclip-collaboration/`.
+Source PRD: `specs/archive/261122-paperclip-collaboration/261122-paperclip-collaboration-auto-review/paperclip-collaboration-auto-review-PRD.md`. Parent spec: `specs/archive/261122-paperclip-collaboration/`.
 
 ## Executive summary
 Fix six review findings (3 P1, 3 P2) in the unreleased migration 000020 and its tests. No P0.
