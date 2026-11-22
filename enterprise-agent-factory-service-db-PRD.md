@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Feature complete through schema 000019 for the original scope (every acceptance criterion provable here has a named, passing test; 000018 and 000019 are not yet traced in §4 and §5, DB-OQ-8). **2026-11-22:** extended for the Paperclip team collaboration change: migration 000020 is specified in DB-41 to DB-49 and DB-US-44 to DB-US-54 (planned, milestone C1, not implemented), and the PRD review record is §11 |
+| **Status** | Feature complete through schema 000019 for the original scope (every acceptance criterion provable here has a named, passing test; 000018 and 000019 are not yet traced in §4 and §5, DB-OQ-8). **2026-11-22:** extended for the Paperclip team collaboration change: migration 000020 is specified in DB-41 to DB-49 and DB-US-44 to DB-US-57 (planned, milestone C1, not implemented), and the PRD review record is §11 |
 | **Change** | [Paperclip team collaboration](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/paperclip-team-collaboration-PRD.md) (COL-*, SEC-7; DB-US-44 to DB-US-47 of its §7.2, split and refined here) |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
 | **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-26) |
@@ -24,7 +24,7 @@ namespace connect to and that people reach through a public endpoint served by `
 repository is narrow: the public component must read routes, role bindings and settings, and write access counts,
 with **no table privilege**; Paperclip's own secrets must live in the managed hierarchy without opening a way to
 bypass it; and the one-collaboration-agent-per-team rule must hold even if the API forgets it. The change adds
-two desired-state tables, one fact table, one login-less role with six functions, and guards on existing tables.
+two desired-state tables, one fact table, one login-less role with ten functions, two session tables, and guards on existing tables.
 
 ## 2. Users of this repository
 
@@ -34,7 +34,7 @@ two desired-state tables, one fact table, one login-less role with six functions
 | `afs-api`, `afs-reconciler`, `afs-gateway`, `afs-billing` at runtime | Least-privilege roles, fast hot paths (spend reservation), safe concurrency, a change feed |
 | Platform operators and DBAs | One-time bootstrap, safe forward-only migrations, backups and restore |
 | Security and audit | Isolation they can test, append-only audit, no secret values anywhere, and a public edge role that can read nothing but what its functions return |
-| `afs-edge` at runtime (000020) | A role with no table privilege and six functions: routes, settings, principals, access counts, one event |
+| `afs-edge` at runtime (000020) | A role with no table privilege and ten functions: routes, settings, principals, access counts, one event, sessions and the single-use handoff |
 
 ## 3. Scope
 
@@ -54,7 +54,7 @@ copies, KMS keys and IAM database authentication (Terraform lives in `-restapi/d
 ## 4. Requirements owned
 
 Each row traces a product requirement to the objects that implement it. Status: ✓ in schema at
-`000019` (rows DB-41 to DB-49 are planned for 000020; 000018 and 000019 are not traced here, DB-OQ-8). Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
+`000019` (rows DB-41 to DB-52 are planned for 000020; 000018 and 000019 are not traced here, DB-OQ-8). Scope is feature complete (root ADR-014): nothing is deferred to a later phase. Rows DB-24 to
 DB-34 come from the PRD review (root D28, D30, D31, D33–D36, D45); DB-35 and DB-36 close the two gaps left
 open at 000013 (root D54, D49); DB-37 adds owner resolution for work orders (root D38); DB-38 closes the
 gaps the 000015 proofs revealed; DB-39 adds the service access paths `-restapi` needs (its X-DB-1 to X-DB-6).
@@ -110,10 +110,13 @@ gaps the 000015 proofs revealed; DB-39 adds the service access paths `-restapi` 
 | DB-47 Edge role and read functions | COL-16 to COL-19, COL-23 | 000020: role `afs_edge` (no table privilege), `afs.collab_routes()`, `afs.collab_settings()`, `afs.collab_principal()`, `afs.collab_principal_key()`, `identity_providers.collab_client_id` and `collab_client_secret_arn` | Planned (C1, used from C2) |
 | DB-48 Collaboration access facts and events | COL-24, COL-30, COL-31, COL-36 | 000020: `collaboration_access` (monthly partitions, 13-month retention), `afs.record_collab_access`, `afs.ensure_collaboration_access_partition`, `afs.emit_collab_secret_detected`, `drop_partitions_older_than` extended | Planned (C1, used from C2) |
 | DB-49 Hostname hold | TEAM-9, PC-D9 | 000020: `collab_hostname_holds`, hold and refusal triggers on `teams` | Planned (C1) |
+| DB-50 Edge sessions and handoff | COL-17, PC-D22 | 000020: `collab_edge_sessions`, `collab_edge_handoffs` (no grants), `afs.collab_handoff_create`, `collab_handoff_consume`, `collab_session_get`, `collab_session_revoke`, `afs.purge_collab_edge_sessions` | Planned (C1, used from C2) |
+| DB-51 Reconciler key functions | COL-12, COL-32, PC-D25, PC-D26 | 000020: `afs.record_collab_agent_key`, `afs.remove_collab_agent_key`, `afs.record_collab_board_key` | Planned (C1, used from C3) |
+| DB-52 Swarm collaboration | COL-9, PC-D29 | 000020: `afs.instantiate_work_order_team` and `afs.record_work_order_secret` extended | Planned (C1, used from C4) |
 
 ## 5. User stories and acceptance criteria
 
-Stories DB-US-1 to DB-US-43 are implemented by migrations 000001 to 000017 (000018 and 000019 are not yet traced, DB-OQ-8); DB-US-44 to DB-US-54 are planned for 000020 (see their subsection). Each story ends with **Proven by:**, naming the
+Stories DB-US-1 to DB-US-43 are implemented by migrations 000001 to 000017 (000018 and 000019 are not yet traced, DB-OQ-8); DB-US-44 to DB-US-57 are planned for 000020 (see their subsection). Each story ends with **Proven by:**, naming the
 integration test (`migrate/migrate_test.go`, `migrate/hardening_test.go` for 000013,
 `migrate/templates_exports_test.go` for 000014, `migrate/feature_complete_test.go` for the proofs and
 fixes of 000015, `migrate/service_access_test.go` for 000016, `migrate/runner_test.go` for the runner) that proves each criterion, written
@@ -741,15 +744,15 @@ read across teams).
 
 ### Paperclip team collaboration (migration 000020, change PRD `paperclip-team-collaboration-PRD.md`)
 
-Stories DB-US-44 to DB-US-54 implement database contract §7.2 for the
+Stories DB-US-44 to DB-US-57 implement database contract §7.2 for the
 [Paperclip change PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/paperclip-team-collaboration-PRD.md)
 (COL-*, SEC-7). DB-US-44 to DB-US-47 are the ids that PRD §7.2 assigns; they are split here into smaller
-stories (DB-US-48 to DB-US-54 take the parts that were bundled). All of 000020 ships in milestone C1 (it is
+stories (DB-US-48 to DB-US-54 take the parts that were bundled; DB-US-55 to DB-US-57 were added when contract v1.3.1 answered PC-D20 to PC-D31). All of 000020 ships in milestone C1 (it is
 additive and `-restapi` adopts it once); C2 to C4 only consume more of it. Integration tests live in
 `migrate/collaboration_000020_test.go` and are **not written yet**: each *Proven by* line names the test the
 change adds, written `TestName/subtest`, and the red step of TDD is that test failing against schema 000019.
 Where this PRD differs from the contract's wording because the existing schema forces it, the story says so and
-the decision is logged as DB-D1 to DB-D16 in §9.1; the contract must be corrected in the same change (DoD, §8).
+the decision is logged as DB-D1 to DB-D19 in §9.1; the contract was corrected to match in v1.3.1 (PC-D20) and this PRD is aligned to it.
 SQLSTATE to API error mapping is unchanged (contract §6).
 
 **DB-US-44 · One collaboration agent per team.** *(refines US-27; COL-1, COL-2, COL-3, COL-5)* As `afs-api`, I
@@ -866,7 +869,7 @@ table privilege, so that a bug or a compromise of the public component can read 
 - `bootstrap/roles.sql` creates `afs_edge` (`NOLOGIN`, `IF NOT EXISTS`, listed in its header comment and its
   role array). The migration's first statement checks that the role exists and raises `55000` ("run
   afs-migrate bootstrap-roles") if not, because `afs_owner` cannot create cluster roles.
-- `afs_edge` holds `USAGE` on schema `afs`, `EXECUTE` on the six functions of DB-US-47, DB-US-51 and DB-US-52
+- `afs_edge` holds `USAGE` on schema `afs`, `EXECUTE` on the ten functions of DB-US-47, DB-US-51, DB-US-52 and DB-US-55
   (revoked from `PUBLIC`) and `afs.schema_version()` (000017's grant list gains it), and may `LISTEN
   afs_desired_state`. Given any table or view in schema `afs`, when `afs_edge` selects, inserts, updates or
   deletes, then `42501` (catalog-driven over every relation, so a table added later cannot slip a grant in).
@@ -915,7 +918,7 @@ validated by the database, so that bad values never reach the edge.
   `collab.content_scan` = `"block"`, `collab.max_body_mb` = 25, `collab.denied_spike_threshold` = 50.
 - A new constraint `service_settings_collab_check` (added `NOT VALID`, then `VALIDATE`; the 000013, 000010 and
   000012 constraints are left alone, DB-D7) rejects with `23514`: a base domain that is neither JSON `null` nor a
-  DNS name (`afs.dns_name_ok`: lower-case labels of 1 to 63 characters, at most 253 in all, at least two labels, no
+  DNS name (`afs.dns_name_ok`: lower-case labels of 1 to 63 characters, 4 to 253 in all, at least two labels, no
   trailing dot); a non-boolean `collab.public_endpoints`; a `collab.allowed_source_cidrs` that is not an array of
   at most 100 valid IPv4 or IPv6 CIDR strings (`afs.cidr_list_ok`); a `collab.session_ttl_minutes` not an integer
   from 15 to 1440; a `collab.content_scan` other than `"block"`, `"warn"`, `"off"`; a `collab.max_body_mb` not an
@@ -958,9 +961,9 @@ Paperclip's own secrets listed but never bound, so that the managed hierarchy ca
   row by `afs_app` is `42501`. `afs_reconciler` gains `INSERT, UPDATE, DELETE` on `afs.secrets` and the trigger
   raises `42501` for any write by it to a row whose `managed_by <> 'paperclip'`, instead of an RLS filter that
   would hide the refusal (DB-D4). `SECURITY DEFINER` functions (`record_work_order_secret`, 000019) run as the
-  owner and are unaffected. The reconciler never inserts `afs` rows: `afs-api` creates the `afs`-managed secret
-  rows (the three boot secrets, the board key and `paperclip-agent-api-key` in `managed` mode), and the reconciler
-  only writes values in Secrets Manager (DB-D11, contract gap).
+  owner and are unaffected. The reconciler never inserts `afs` rows directly: `afs-api` creates the three boot secrets in the `CreateAgent`
+  transaction, and the reconciler records `paperclip-agent-api-key` and `paperclip-board-api-key` through the
+  `SECURITY DEFINER` functions of DB-US-56 and records the `afs`-managed key rows through the three functions of DB-US-56 (DB-D11, PC-D25).
 - A live collaboration agent's four `afs`-managed secrets (three boot secrets and the board key) cannot be deleted
   by `afs_app` (`55000`); they may be updated for rotation of the metadata columns (`last_changed_at`,
   `current_version_id`) (DB-D12).
@@ -1109,6 +1112,92 @@ so that adopting it is routine.
   `TestMigrationsStateLockImpact`; `TestEveryRevisionTableAnnouncesChanges/team_collaboration` and
   `/agent_collaboration`; `TestCrossTeamWritesChangeNothing/team_collaboration`, `/agent_collaboration`.
 
+**DB-US-55 · Edge sessions and the single-use handoff.** *(refines US-29; COL-17, PC-D22, PC-D23)* As `afs-edge`, I
+want sessions and the 60-second handoff stored server-side behind functions, so that single use holds across
+replicas, the cookie carries only an opaque id, and `afs_edge` still holds no table privilege.
+- `collab_edge_sessions`: `id_hash bytea PRIMARY KEY CHECK (length(id_hash) = 32)`, `team_id text NOT NULL` (no
+  foreign key), `issuer`, `subject`, `provider_id` (`text NOT NULL`), `groups text[] NOT NULL DEFAULT '{}' CHECK
+  (cardinality(groups) <= 500)`, `created_at`, `expires_at timestamptz NOT NULL CHECK (expires_at > created_at)`,
+  `last_seen_at`, `revoked_at`. `collab_edge_handoffs`: `code_hash bytea PRIMARY KEY CHECK (length(code_hash) =
+  32)`, `team_id`, `host`, `issuer`, `subject`, `provider_id`, `groups` (as above), `expires_at NOT NULL`,
+  `consumed_at`, `created_at`. No token, claim other than `groups`, or Paperclip content is stored; the plain
+  session id and code never are (DB-D17).
+- Both tables have RLS enabled with no policy for `afs_app` and **no grant to any role**, `afs_readonly` included
+  (the hashes are credentials): every role's direct select, insert, update or delete is `42501`.
+- `afs.collab_handoff_create(code_hash, team_id, host, issuer, subject, provider_id, groups) -> timestamptz` stores
+  the identity and returns `expires_at = now() + 60 s`; an existing hash is `23505`; more than 500 groups `22023`.
+- `afs.collab_handoff_consume(code_hash, host, session_id_hash) -> (team_id, expires_at)` runs one atomic `UPDATE
+  ... SET consumed_at = now() WHERE code_hash = $1 AND host = $2 AND consumed_at IS NULL AND expires_at > now()
+  RETURNING` and, in the same transaction, inserts a session for that identity under the hash the edge supplied,
+  with `expires_at = now() + collab.session_ttl_minutes`. There is no `collab_session_create`. Given two concurrent
+  calls with one code, then exactly one returns a row and exactly one session exists; given an unknown, expired,
+  consumed or other-host code, then no row and no session; given a `session_id_hash` already in use, `23505`.
+- `afs.collab_session_get(id_hash)` returns one row (`team_id`, `issuer`, `subject`, `provider_id`, `groups`,
+  `expires_at`, `last_seen_at`) for a live session (not expired, not revoked) and no row otherwise; it sets
+  `last_seen_at` at most once a minute and deletes nothing. `afs.collab_session_revoke(id_hash) -> boolean` sets
+  `revoked_at` and returns true when a live session was revoked.
+- `afs.purge_collab_edge_sessions() -> bigint` (`afs_reconciler` only, hourly) deletes sessions expired or revoked
+  more than an hour ago and handoffs expired more than an hour ago, and returns the rows deleted; younger rows stay.
+- The ten edge functions are `collab_routes`, `collab_settings`, `collab_principal`, `collab_principal_key`,
+  `record_collab_access`, `emit_collab_secret_detected` and these four; `afs_edge` may execute exactly those (the
+  catalog test in DB-US-47 counts ten) and all four are `SECURITY DEFINER` with `search_path = pg_catalog, afs`.
+- Proven by: `TestEdgeSessions`: `handoff single use under concurrency`, `handoff expires after 60 seconds`, `handoff
+  bound to its host`, `consume creates the session under the edge's hash`, `duplicate hash 23505`, `unknown code no
+  row`, `session get live only`, `last_seen_at once a minute`, `revoke`, `groups limit 22023`, `session ttl follows
+  collab.session_ttl_minutes`, `purge removes only old rows`, `no grant on the tables for any role 42501`, `plain
+  ids never stored (columns hold 32-byte hashes)`, `only the edge may call the four, only the reconciler the purge`.
+
+**DB-US-56 · Reconciler key functions.** *(refines US-28; COL-12, COL-32; PC-D25, PC-D26)* As the reconciler, I want
+three functions to record and remove the `afs`-managed Paperclip key secrets, so that I never hold an insert on
+`afs`-managed rows and the guard of DB-US-49 stays strict.
+- `afs.record_collab_agent_key(team_id, agent_id, secret_arn) -> text` (`afs_reconciler` only; `afs_app` and every
+  other role `42501`): for a live `worker` agent whose `agent_collaboration.connect` is true in a team with
+  `registration_mode = 'managed'`, upserts the agent's secret `paperclip-agent-api-key` (`managed_by = 'afs'`,
+  `origin = 'managed'`, agent scope, empty description) and its `agent_secret_bindings` row (`delivery = 'env'`,
+  `target = 'PAPERCLIP_AGENT_API_KEY'`). The ARN must match the 000009 regex with a path equal to
+  `afs.secret_path(team_id, agent_id, 'paperclip-agent-api-key')`. It returns the secret id and is idempotent: a
+  second call with a new ARN updates the row (a rotation reuses it) and creates no second binding. It writes an audit
+  row `RecordCollabAgentKey` (`actor_type` `system`, `actor_id` `afs.current_actor()`) and no outbox row. Errors:
+  unknown agent `P0002`; agent not connected, not a worker, or registration `manual` `55000`; bad ARN `23514`.
+- `afs.remove_collab_agent_key(team_id, agent_id) -> boolean` removes that binding and secret row and returns true
+  when anything was removed (false when there was nothing); audit `RemoveCollabAgentKey`; no outbox row.
+- `afs.record_collab_board_key(team_id, collab_agent_id, secret_arn) -> text` records `paperclip-board-api-key` on the
+  team's live collaboration agent (`managed_by = 'afs'`, agent scope, path equal to `afs.secret_path(team_id,
+  collab_agent_id, 'paperclip-board-api-key')`) and **never** a binding. It returns the secret id, is idempotent and
+  audits `RecordCollabBoardKey`; `55000` when the agent is not a live collaboration agent of the team; `P0002` for an
+  unknown agent; `23514` for a bad ARN.
+- The functions run as the owner, so the guard of DB-US-49 allows them; no function writes a secret value (there is
+  none to write).
+- Proven by: `TestCollabKeyFunctions`: `record creates secret and binding`, `idempotent rotation reuses the row`,
+  `manual registration 55000`, `not connected 55000`, `not a worker 55000`, `unknown agent P0002`, `arn path must
+  match 23514`, `remove returns true then false`, `audit rows and no outbox rows`, `board key has no binding`,
+  `board key needs a live collaboration agent 55000`, `only the reconciler may call 42501`, `afs_app still cannot
+  insert afs rows for a paperclip name it may not own`.
+
+**DB-US-57 · A swarm may rent a collaboration agent.** *(refines US-33 and the swarm stories; COL-9, PC-D29; P1,
+shipped in 000020, used in C4)* As the reconciler, I want `instantiate_work_order_team` to create the collaboration
+agent when the swarm template asks for one, so that a swarm's people can watch it.
+- A swarm template `spec` may carry `collaboration: {"templateId": "tpl_..."}`. When it does,
+  `afs.instantiate_work_order_team` (000016, replaced by `CREATE OR REPLACE`; 000019's envelope payloads kept) also
+  inserts, in the same transaction, the team's collaboration agent (`role = 'collaboration'`, that template and its
+  `current_image_digest`, `iam_identity = 'dedicated'`, `snapshot_schedule = 'daily'`, the template's default
+  resources, name `paperclip`) and its `team_collaboration` row (web UI on, REST API off, `manual`), and writes an
+  outbox event `agent.created` with the API contract §7 envelope beside the existing ones. Its model is the model
+  of the swarm's first pool in spec order (DB-D18: `agent_templates` has no model column).
+- Given an unknown, disabled or non-`paperclip` template, then `23514` and nothing is created (the team, pools and
+  work order are unchanged); given a spec without `collaboration`, then behaviour is exactly as 000019; given a
+  second call, then it returns the same team and creates no second agent.
+- `afs.record_work_order_secret` (000019) accepts the id of the work order team's collaboration agent (`agt_...`) in its
+  pool argument. It then records an agent-scope secret with `managed_by = 'afs'` and its binding, only for the three
+  boot secret names and their environment variables (`BETTER_AUTH_SECRET`, `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET`,
+  `PAPERCLIP_SECRETS_MASTER_KEY`); another name, or an `agt_` id that is not the team's collaboration agent, is `23514`;
+  other rules (audit, `secret.created` outbox event, idempotency on team and name) as for a pool secret.
+- Proven by: `TestSwarmCollaboration`: `agent and team_collaboration created with defaults`, `agent.created event with
+  envelope`, `model from the first pool`, `invalid template refused and nothing created 23514`, `no collaboration
+  entry unchanged`, `second call idempotent`, `boot secret recorded for the collaboration agent`, `other names and
+  other agents refused 23514`, `pool secrets still work`; the existing `TestInstantiateWorkOrderTeam` and
+  `TestRecordWorkOrderSecret` subtests stay green.
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |
@@ -1135,7 +1224,7 @@ so that adopting it is routine.
 | M0 Foundations | Schema 000001–000017, feature complete; first release tag `v0.13.0` (nothing is tagged yet, so it is the first release to contain 000011–000017) for `-restapi` to adopt |
 | M3 Spend control | Load test of `reserve_spend` and `reserve_spend_held` with `-restapi` (concurrent bound, p99, RLS overhead); partition and retention jobs verified |
 | M4 Production readiness | Restore drill documented in `user-docs/` |
-| C1 Collaboration agent (change PRD §10) | All of migration 000020 (DB-US-44 to DB-US-54), as one minor release for `-restapi` to adopt (tag chosen at release; it follows the first tag that contains 000011 to 000019). Exit: every story's *Proven by* test passes against `postgres:17`, `make gate` and `make test-db` are green, the contract §7.2 and `docs/data-model.md` are corrected, `-restapi` has built against the tag. Roles bootstrap (`afs_edge`) runs in dev first |
+| C1 Collaboration agent (change PRD §10) | All of migration 000020 (DB-US-44 to DB-US-57; swarm collaboration is P1 and used in C4), as one minor release for `-restapi` to adopt (tag chosen at release; it follows the first tag that contains 000011 to 000019). Exit: every story's *Proven by* test passes against `postgres:17`, `make gate` and `make test-db` are green, the contract §7.2 and `docs/data-model.md` are corrected, `-restapi` has built against the tag. Roles bootstrap (`afs_edge`) runs in dev first |
 | C2 Public web UI | No migration. `-restapi` `afs-edge` uses `collab_routes()`, `collab_settings()`, `collab_principal*()`, `record_collab_access()`; this repository supports with fixes and a load check of the principal functions in the dev environment |
 | C3 REST API and managed mode | No migration. `emit_collab_secret_detected()`, `paperclip` secret rows and link-state writes are exercised by `-restapi`; gaps found become a minor migration (000021) |
 | C4 People and reports | No migration expected. `collaboration_access` read by the collaboration report; retention verified with the monthly job |
@@ -1148,7 +1237,7 @@ so that adopting it is routine.
 - [ ] `docs/data-model.md` and, if roles, grants, functions or errors change, the database contract
 - [ ] Every new acceptance criterion names its test in a **Proven by:** line
 - [ ] `make gate` and `make test-db` green; release tag noted for `-restapi`
-- [ ] Paperclip change (000020), in addition: `bootstrap/roles.sql` (and its header comment) lists `afs_edge`; the database contract §7.2 is corrected to match DB-D1 to DB-D16 (the nine points listed in §9.1 under "Contract corrections") in the same change; `seedOtherTeams` and the role lists in tests are extended (DB-US-54); `docs/data-model.md` gains `team_collaboration`, `agent_collaboration`, `collaboration_access`, `collab_hostname_holds`, the new columns and the `afs_edge` role; `user-docs/` mentions running `afs-migrate bootstrap-roles` before a `-restapi` release that embeds 000020; the release tag is noted for `-restapi`
+- [ ] Paperclip change (000020), in addition: `bootstrap/roles.sql` (and its header comment) lists `afs_edge`; database contract §7.2 (corrected in v1.3.1) and this PRD still agree on every name when 000020 lands; `seedOtherTeams` and the role lists in tests are extended (DB-US-54); `docs/data-model.md` gains `team_collaboration`, `agent_collaboration`, `collaboration_access`, `collab_hostname_holds`, `collab_edge_sessions`, `collab_edge_handoffs`, the new columns and the `afs_edge` role; `user-docs/` mentions running `afs-migrate bootstrap-roles` before a `-restapi` release that embeds 000020; the release tag is noted for `-restapi`
 
 ## 9. Open questions
 
@@ -1163,8 +1252,9 @@ so that adopting it is routine.
 | DB-OQ-6 | `tag_sets` ids are md5 of their content: collision risk accepted? | db | Open |
 | DB-OQ-7 | D18 (security operators, service-level keys), D19 (who switches on viewer kubectl) and D22 (swarm and work order plumbing) are accepted working decisions pending J's review | J | Pending review |
 | DB-OQ-8 | The PRD predates migrations 000018 (report rollups, `agent_secret_bindings` revisions, billing reads) and 000019 (work order secrets, `afs.event_detail`): they have no requirement rows or stories in §4 and §5, though their tests exist. Add them in a catch-up change | db | Open |
-| DB-OQ-9 | Who inserts the `afs`-managed secret rows that the reconciler fills in `managed` registration (`paperclip-agent-api-key` per connected agent) and after bootstrap (`paperclip-board-api-key`)? DB-US-49 lets only `afs_app` insert them (the reconciler writes `paperclip` rows only), so `afs-api` must create the empty Secrets Manager secret and its row, and the reconciler must only `PutSecretValue`. Confirm with `-restapi` (contract §7.2.6 and API contract §4.4b, PC-OQ-2) | restapi, db | Open; default as stated |
+| DB-OQ-9 | Who inserts the `afs`-managed key rows in `managed` registration? | restapi, db | Resolved by PC-D25: three reconciler functions (DB-US-56); `afs-api` inserts only the boot secrets |
 | DB-OQ-10 | Should a worker agent's deletion also set its `agent_collaboration.connect = false`, as the collaboration agent's does for the team? The contract says only the collaboration agent's cleanup does; the reconciler revokes keys for deleted workers by observing `agents.state` | restapi, db | Open; default: no trigger, the reconciler handles it |
+| DB-OQ-12 | Swarm collaboration agent's model: `agent_templates` has no model column, so DB-D18 takes the first pool's model. Should the swarm template spec carry `collaboration.modelId` instead (a contract change to database contract §7.2.9)? | restapi, db | Open; default: first pool's model |
 | DB-OQ-11 | Is the database to refuse an `agent_collaboration.link_state = 'linked'` while `connect = false`? Not in the contract; the trigger sets `disabled` on disconnect and the reconciler could race it | restapi | Open; default: not refused |
 
 ### 9.1 Decisions (Claude, for J's review)
@@ -1185,17 +1275,17 @@ match (DoD, §8).
 | DB-D8 | Contract §7.2.2 names the RLS policy `app_team`; every existing team-owned table uses `app_team_scope` | Use `app_team_scope` and `service_roles_all` |
 | DB-D9 | Contract §7.2.5 matches a user on "`sub` and provider"; `users` has `oidc_issuer`, `oidc_subject` and `disabled_at`, and no provider id | Match `users.oidc_issuer = identity_providers.issuer_url` of `p_provider_id` and `oidc_subject = p_subject`, and exclude users with `disabled_at` set |
 | DB-D10 | Contract §7.2.5 creates the hostname hold when a team with a `team_collaboration` row is deleted, but the cleanup trigger removes that row when the collaboration agent is deleted, which happens before the team's `deleted_at` is set | Create the hold when the team has ever had a collaboration agent (any `agents` row with `role = 'collaboration'`, including deleted) |
-| DB-D11 | Which role inserts `afs`-managed rows for the board key and per-agent keys in `managed` mode (contract §7.2.6 gives the reconciler no insert on them) | `afs_app` only; the reconciler fills values in Secrets Manager (DB-OQ-9) |
+| DB-D11 | Which role inserts `afs`-managed rows for the board key and per-agent keys in `managed` mode | Resolved by PC-D25: neither `afs_app` nor a direct reconciler insert; three `SECURITY DEFINER` functions for `afs_reconciler` (DB-US-56). `afs_app` inserts only the boot secrets |
 | DB-D12 | May a team-admin delete the boot secrets of a live collaboration agent? Not stated | No: `55000` for `afs_app`; rotation of metadata is allowed. The API's rotate rules (COL-7) stay in `-restapi` |
 | DB-D13 | `aggregate_kind` and `aggregate_id` of `collaboration.secret_detected` are not stated | `team_collaboration` and the team id |
 | DB-D14 | Contract §7.2.1 checks `collab_client_secret_arn` with a loose `LIKE`; `client_secret_arn` uses the stricter regex of 000009 | Use the 000009 regex for both, so one parser serves both |
 | DB-D15 | After the collaboration agent starts deleting, the unique index (on `deleted_at IS NULL`) still blocks a replacement while the team's route row is already gone | Accept: a new collaboration agent is refused with `23505` until the reconciler marks the old one `deleted`; the API returns `409` meanwhile. No second index |
 | DB-D16 | COL-5 says daily snapshots with 14 kept; the column default is 7 | The database keeps its default and enforces only "not off"; `afs-api` sets 14 for the role |
+| DB-D17 | Sessions and handoffs (PC-D22, contract §7.2.8) | Only SHA-256 hashes are stored; the edge generates the session id hash and passes it to `collab_handoff_consume`, so the handoff row carries the identity and there is no `collab_session_create`; tables carry no grant to any role and RLS is enabled with no policy |
+| DB-D18 | Which model does a swarm's collaboration agent use? Contract §7.2.9 says "the template's default resources and model"; `agent_templates` has no model column | The first pool's model in spec order (an enabled team model by construction); DB-OQ-12 |
+| DB-D19 | Do the key functions emit events? | No outbox rows, only audit (PC-D25); the board key is never bound |
 
-**Contract corrections** this change must make to `docs/contracts/database-contract.md` §7.2 (and the change PRD's
-DB-US-44 to DB-US-47 text, which this PRD supersedes for `-db`): the notify payloads (DB-D2); the generation bump
-(DB-D1); the policy name (DB-D8); the secrets rules (DB-D3 to DB-D5, DB-D11); the guard trigger (DB-D6); the
-settings constraint (DB-D7); the user match (DB-D9); the hostname hold condition (DB-D10); the ARN pattern (DB-D14).
+**Contract corrections:** all of DB-D1 to DB-D16 were applied to `docs/contracts/database-contract.md` §7.2 in API contract v1.3.1 (PC-D20), and the change PRD's DB-US-44 to DB-US-47 are superseded for `-db` by this PRD. DB-D17 to DB-D19 restate PC-D22, PC-D25 and the open model question.
 
 ## 10. Dependencies
 
@@ -1219,16 +1309,16 @@ settings constraint (DB-D7); the user match (DB-D9); the hostname hold condition
 | Database contract §7.2 | Root `docs/contracts/database-contract.md` | Migration 000020; corrected to the decisions of §9.1 when 000020 lands | With 000020 | C1 |
 | Decisions | Root ADR-014 (feature-complete scope) and ADR-015 (PRD review resolutions D23–D56, recorded in root PRD §10.1; ADR-015 in the root ADR log) | Scope and the 000013 and 000014 behaviour (D49, D54) | — | — |
 | Collaboration role bootstrap | Platform DBA | `afs-migrate bootstrap-roles` creates `afs_edge` (NOLOGIN) before 000020; the `afs-edge` LOGIN user is a member of `afs_edge` with IAM authentication, created with the other service users | Before `-restapi` adopts 000020 | C1 |
-| Edge | `-restapi` `afs-edge` | `collab_routes()` (30 s and on notify), `collab_settings()`, `collab_principal()`, `collab_principal_key()`, `record_collab_access()` every 5 minutes, `emit_collab_secret_detected()`; `LISTEN afs_desired_state` | Continuously | C2 |
-| Collaboration reconciliation | `afs-reconciler` | Writes `agent_collaboration` link columns and `paperclip` secret rows, `resource_status` for `team_collaboration`; reads `collaboration_access` every minute for `collaboration.denied_spike`; `ensure_collaboration_access_partition` monthly; purges expired `collab_hostname_holds` daily; `drop_partitions_older_than(13)` now also covers `collaboration_access` | Continuously | C1 to C3 |
+| Edge | `-restapi` `afs-edge` | `collab_routes()` (30 s and on notify), `collab_settings()`, `collab_principal()`, `collab_principal_key()`, `record_collab_access()` every 5 minutes, `emit_collab_secret_detected()`, `collab_handoff_create/consume`, `collab_session_get/revoke` (sessions are server-side, PC-D22); `LISTEN afs_desired_state` | Continuously | C2 |
+| Collaboration reconciliation | `afs-reconciler` | Calls `record_collab_agent_key`, `remove_collab_agent_key`, `record_collab_board_key` and `purge_collab_edge_sessions` (hourly); writes `agent_collaboration` link columns and `paperclip` secret rows, `resource_status` for `team_collaboration`; reads `collaboration_access` every minute for `collaboration.denied_spike`; `ensure_collaboration_access_partition` monthly; purges expired `collab_hostname_holds` daily; `drop_partitions_older_than(13)` now also covers `collaboration_access` | Continuously | C1 to C3 |
 | Collaboration API | `afs-api` | Inserts `team_collaboration` with the collaboration agent and the four `afs` boot and board secrets in one transaction; upserts `agent_collaboration`; reads `collaboration_access` for T16 and the collaboration report (reads only, RLS applies) | Per request | C1, C4 |
 | Pinned contract extracts | Root contracts | This repository keeps no pinned snapshot of a root contract (it provides the database contract). When 000020 lands, `docs/data-model.md` and the database contract §7.2 must be resynced in the same change (DoD); `-restapi`, `-cli` and `-website` resync their own pinned API snapshots from `-restapi` | With 000020 | C1 |
 | Paperclip change PRD | Root `paperclip-team-collaboration-PRD.md` (COL-*, SEC-7, PC-D1 to PC-D19, PC-OQ-1 to PC-OQ-8) | Requirements and decisions refined by DB-41 to DB-49 | — | C1 to C4 |
 
 ## 11. Review record
 
-`review-prd` pass by hand (dev-flow), 2026-11-22, on the Paperclip extension of this PRD (DB-41 to DB-49,
-DB-US-44 to DB-US-54, §9.1), checked against migrations 000001 to 000019 and `bootstrap/roles.sql`. The earlier
+`review-prd` pass by hand (dev-flow), 2026-11-22, on the Paperclip extension of this PRD (DB-41 to DB-52,
+DB-US-44 to DB-US-57, §9.1), checked against migrations 000001 to 000019 and `bootstrap/roles.sql`. The earlier
 content (DB-1 to DB-40, DB-US-1 to DB-US-43) was not re-reviewed. Verdict after fixes: **Ready for spec**.
 
 | Dimension | Status | Note |
@@ -1261,3 +1351,5 @@ Findings and fixes in this pass:
   working values to be confirmed in the load test.
 - **Not fixed, left open on purpose:** 000018 and 000019 have no requirement rows or stories (DB-OQ-8); the
   worker-deletion and `linked`-while-disconnected questions (DB-OQ-10, DB-OQ-11). None blocks 000020.
+
+**Aligned to v1.3.1** (2026-11-22, after the contracts corrections round, PC-D20 to PC-D31): DB-US-55 (sessions and handoffs, PC-D22), DB-US-56 (reconciler key functions and purge, PC-D25, PC-D26) and DB-US-57 (swarm collaboration, PC-D29) added; the edge now has ten functions (DB-US-47, DB-US-55); DB-OQ-9 closed and DB-D11 resolved by PC-D25; DB-D17 to DB-D19 added; contract corrections confirmed applied. Remaining inconsistency: contract §7.2.9 names a template "model" that `agent_templates` lacks (DB-D18, DB-OQ-12).
