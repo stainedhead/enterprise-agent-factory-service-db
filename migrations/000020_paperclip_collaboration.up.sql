@@ -1037,6 +1037,7 @@ AS $$
 DECLARE
   v_user    text;
   v_default text;
+  v_team_idp text;
 BEGIN
   IF coalesce(cardinality(p_groups), 0) > 500 THEN
     RAISE EXCEPTION 'at most 500 groups' USING ERRCODE = 'invalid_parameter_value';
@@ -1045,6 +1046,8 @@ BEGIN
     FROM afs.users u JOIN afs.identity_providers p ON p.issuer_url = u.oidc_issuer
    WHERE p.id = p_provider_id AND u.oidc_subject = p_subject AND u.disabled_at IS NULL;
   SELECT d.id INTO v_default FROM afs.identity_providers d WHERE d.is_default;
+  -- A team's group bindings name no provider (000010): they use the team's provider, else the default.
+  SELECT coalesce(t.identity_provider_id, v_default) INTO v_team_idp FROM afs.teams t WHERE t.id = p_team_id;
   RETURN QUERY
     SELECT b.id, b.role, b.subject_type, v_user
       FROM afs.role_bindings b
@@ -1052,8 +1055,9 @@ BEGIN
             OR (b.team_id IS NULL AND b.role = 'service_admin'))
        AND ((b.subject_type = 'user' AND v_user IS NOT NULL AND b.user_id = v_user)
             OR (b.subject_type = 'group' AND b.group_name = ANY (coalesce(p_groups, '{}'))
-                AND (b.identity_provider_id = p_provider_id
-                     OR (b.identity_provider_id IS NULL AND p_provider_id IS NOT NULL AND p_provider_id = v_default))))
+                AND p_provider_id IS NOT NULL
+                AND p_provider_id = CASE WHEN b.team_id IS NOT NULL THEN v_team_idp
+                                         ELSE coalesce(b.identity_provider_id, v_default) END))
      ORDER BY b.id;
 END $$;
 
@@ -1401,3 +1405,9 @@ BEGIN
           afs.event_detail(v_team, p_pool_id, jsonb_build_object('secretId', v_secret, 'name', p_name, 'scope', 'pool')));
   RETURN v_secret;
 END $$;
+
+-- Hardening: the partition helpers were executable by PUBLIC (a default for functions). They are
+-- SECURITY DEFINER, so the login-less afs_edge role must not reach them. The reconciler keeps its
+-- explicit grants from 000002 and 000008.
+REVOKE EXECUTE ON FUNCTION afs.ensure_usage_partition(date), afs.ensure_activity_partition(date),
+  afs.ensure_traffic_partition(date) FROM PUBLIC;

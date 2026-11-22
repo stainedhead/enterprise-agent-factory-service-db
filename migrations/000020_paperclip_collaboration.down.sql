@@ -373,3 +373,6 @@ DROP INDEX afs.agents_team_collaboration_uq;
 ALTER TABLE afs.agents DROP COLUMN role;
 ALTER TABLE afs.agent_templates DROP COLUMN capabilities;
 DROP FUNCTION afs.capabilities_ok(text[]);
+
+GRANT EXECUTE ON FUNCTION afs.ensure_usage_partition(date), afs.ensure_activity_partition(date),
+  afs.ensure_traffic_partition(date) TO PUBLIC;
