@@ -26,6 +26,10 @@ Resolved from the PRD's DB-D1 to DB-D19 as written. Added while implementing (al
 - **`afs_edge` callable set:** the ten edge functions plus `schema_version()`. `purge_collab_edge_sessions` is the reconciler's.
 - **Down migration** restores the 000019 catalog exactly (compared in `TestMigration000020`: columns, constraints, indexes, triggers, function bodies and ACLs, policies, relation and column ACLs, schema ACL, settings). It deletes the rows only 000020 can create (`managed_by <> 'user'` secrets and their bindings, `team_collaborator` bindings and keys, the `collab.*` settings) and leaves the `afs_edge` role alone (roles are cluster-level).
 
+## Release note for `-restapi`
+
+Adopt the next minor tag of this module (it contains 000020; the tag is chosen at release, after the first tag containing 000011 to 000019). Before the rollout a DBA runs `afs-migrate bootstrap-roles` so `afs_edge` exists; the `afs-edge` LOGIN user is created as a member of it.
+
 ## Edge cases and solutions
 
 - A `FOUND` check after `PERFORM` inside the agent guard was unreliable across the trigger's branches; the guard uses an explicit `v_has` flag.

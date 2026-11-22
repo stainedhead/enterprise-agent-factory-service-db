@@ -73,3 +73,26 @@ Decisions local to this repository. Cross-repo decisions live in the root reposi
   teams' rows. Each function is a reviewed entry point with catalog-checked grants
   (`executableBy` in `migrate/service_access_test.go`); a new pre-scope need is a new function, not a
   wider policy.
+
+## ADR-009 A login-less edge role that reaches data only through functions
+- Status: Accepted (000020 release)
+- Context: the Paperclip collaboration edge is the one AFS component reachable from outside the cluster
+  network. If it is compromised, the database must give it as little as possible (-db PRD DB-41 to DB-52,
+  root database contract section 7.2).
+- Decision: a new group role `afs_edge` with no privilege on any table, view or sequence. It gets `USAGE` on
+  schema `afs` and `EXECUTE` on ten `SECURITY DEFINER` functions (routes, settings, principal lookups,
+  access counts, the secret-detected event, sessions and one-time handoffs) that return named columns only.
+  Session ids and handoff codes are stored as SHA-256 hashes in tables no role can read. The default `PUBLIC`
+  execute privilege on the older `SECURITY DEFINER` partition helpers is revoked so the role cannot reach them.
+- Consequences: a test lists every relation and function and fails if `afs_edge` gains anything outside its
+  list (`TestEdgeRole`). The role is created by `bootstrap/roles.sql`, which a DBA runs first (migration
+  000020 refuses to run without it, `55000`), because `afs_owner` cannot create cluster roles.
+
+## ADR-010 Guards that key on the caller are SECURITY INVOKER
+- Status: Accepted (000020 release)
+- Context: `secrets_managed_guard` decides by `current_user` which rows a role may write (the reconciler may
+  write only Paperclip's own secrets). A `SECURITY DEFINER` trigger function would always see the owner.
+- Decision: such guards are `SECURITY INVOKER`. The `SECURITY DEFINER` functions that must write across the
+  guard (`record_work_order_secret`, the key functions) run as the owner and pass. Trigger order matters:
+  `secrets_managed_guard` fires before `secrets_managed_path` because PostgreSQL orders triggers by name.
+- Consequences: a test asserts the order; a new guard of this kind must be written the same way.

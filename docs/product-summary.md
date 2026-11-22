@@ -1,7 +1,7 @@
 # Product summary
 
 The desired-state database for the Enterprise Agent Factory Service (AFS): RDS PostgreSQL 17, schema
-`afs`, migrations 000001–000016 (feature complete). It holds every team, person, agent, pool, secret
+`afs`, migrations 000001–000020 (feature complete). It holds every team, person, agent, pool, secret
 reference, budget, price, report fact, work order, revision and audit row, and it is the only place that
 schema changes.
 
@@ -19,6 +19,10 @@ What it guarantees at the data layer, behind the API's own checks:
 - **Narrow service paths.** Lookups before a team is known (API key by hash, workload by namespace and
   ServiceAccount, the team directory for security operators) and the reconciler's creation of remediation
   teams go through named `SECURITY DEFINER` functions, each executable only by the roles that need it.
+- **Team collaboration (000020).** Each team may run one Paperclip collaboration agent. The database stores the
+  agent's role and the team's choices, keeps Paperclip's own secrets as references the reconciler records, and
+  serves the public collaboration edge through a login-less role (`afs_edge`) that has no table privilege and
+  calls ten `SECURITY DEFINER` functions: routes, principals, access counts and sessions.
 - **History.** Every desired-state change bumps a version, writes a revision and is announced on the
   `afs_desired_state` channel; the audit log is append-only.
 - **Safe migrations.** One advisory-locked runner with checksums and a per-migration lock timeout, used by

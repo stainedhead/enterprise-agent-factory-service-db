@@ -6,8 +6,12 @@
 - Each migration transaction sets `lock_timeout` locally (`migrate.DefaultLockTimeout`, 10 s;
   `migrate.WithLockTimeout`; `afs-migrate --lock-timeout`), with `set_config(..., true)` so it applies to
   that transaction only and never to the advisory-lock wait (ADR-005).
-- `usage_events`, `agent_activity` and `external_traffic` are range-partitioned by month with a default
+- `usage_events`, `agent_activity`, `external_traffic` and (000020) `collaboration_access` are range-partitioned by month with a default
   partition; the reconciler creates next month's partitions and drops those older than 13 months.
+- The collaboration edge connects as a login that is a member of `afs_edge` (000020). The role has no table
+  privilege; it calls ten `SECURITY DEFINER` functions with a pinned `search_path`, and the partition helpers
+  (`ensure_*_partition`) are revoked from `PUBLIC` so it cannot reach them. Sessions and handoff codes are stored
+  as SHA-256 hashes only.
 - Backups: RDS automated backups with PITR (35 days) and cross-region, cross-account snapshot copies
   through AWS Backup (configured in `-restapi/deploy/terraform`).
 
@@ -22,6 +26,7 @@
 | `migrate/feature_complete_test.go` | Catalog-driven proofs (every team table's isolation, every revision table's feed), the 000015 fixes and the remaining PRD criteria |
 | `migrate/work_order_secrets_000019_test.go` | 000019: `record_work_order_secret` (allowed, idempotent, refusals, grant, isolation) and the event envelope of `instantiate_work_order_team` |
 | `migrate/service_access_test.go` | 000016: API key lookup, workload resolution, team directory, remediation team instantiation, pool deletion grant, audit and outbox insert policies |
+| `migrate/collaboration_000020_test.go`, `collaboration_secrets_000020_test.go`, `collaboration_edge_000020_test.go`, `migration_000020_test.go` | 000020: collaboration agent and template capabilities, `team_collaborator`, guardrails and `collab.*` settings, `team_collaboration` and `agent_collaboration`, cleanup and hostname hold, managed secrets and key functions, the `afs_edge` role and its functions, access counts and partitions, sessions, swarm collaboration, row-level security, and the migration itself (pre-flight, existing rows, catalog comparison after down) |
 | `cmd/afs-migrate/main_test.go` | Argument checks |
 
 Integration tests need `AFS_TEST_DATABASE_URL` and create one database per test. The catalog-driven tests

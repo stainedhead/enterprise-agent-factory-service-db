@@ -1,6 +1,6 @@
 # Tasks: paperclip-collaboration
 
-2026-11-22. Status: In progress. Progress: 17/18 (T18 is step 4).
+2026-11-22. Status: In progress. Progress: 18/18.
 
 Each task: Red test, Green migration section, refactor. Duration S (under an hour) or M.
 
@@ -23,4 +23,4 @@ Each task: Red test, Green migration section, refactor. Duration S (under an hou
 | T15 | DB-US-55 sessions and handoff | T12 | M | `TestEdgeSessions` | Done |
 | T16 | DB-US-57 swarm collaboration | T10, T6 | M | `TestSwarmCollaboration` | Done |
 | T17 | DB-US-54 down, catalog comparison, up/down/up, checksums, fixture, isolation tests | T3..T16 | M | `TestMigration000020`, isolation tests | Done |
-| T18 | Docs: data-model, README, AGENTS, user-docs, ADR | T17 | M | DoD checklist | Pending (step 4) |
+| T18 | Docs: data-model, README, AGENTS, user-docs, ADR | T17 | M | DoD checklist | Done |
