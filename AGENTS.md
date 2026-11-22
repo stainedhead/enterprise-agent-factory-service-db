@@ -16,7 +16,7 @@ root (PRD and `docs/solution-design.md`). Its only code consumer is
 [enterprise-agent-factory-service-restapi](https://github.com/stainedhead/enterprise-agent-factory-service-restapi),
 which imports this module at a released tag and connects as the roles defined here.
 
-Status: feature complete (migrations 000001–000018) with integration tests for up/down/up, checksums,
+Status: feature complete (migrations 000001–000019) with integration tests for up/down/up, checksums,
 constraints, spend reservation, row-level security, the change feed and the service access functions; every PRD criterion provable here
 names its test.
 

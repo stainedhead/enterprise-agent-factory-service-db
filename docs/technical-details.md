@@ -20,6 +20,7 @@
 | `migrate/hardening_test.go` | 000013: guards, spend periods, change feed, retention, runtime settings |
 | `migrate/templates_exports_test.go` | 000014: agent templates, export bundles, repository owners |
 | `migrate/feature_complete_test.go` | Catalog-driven proofs (every team table's isolation, every revision table's feed), the 000015 fixes and the remaining PRD criteria |
+| `migrate/work_order_secrets_000019_test.go` | 000019: `record_work_order_secret` (allowed, idempotent, refusals, grant, isolation) and the event envelope of `instantiate_work_order_team` |
 | `migrate/service_access_test.go` | 000016: API key lookup, workload resolution, team directory, remediation team instantiation, pool deletion grant, audit and outbox insert policies |
 | `cmd/afs-migrate/main_test.go` | Argument checks |
 
