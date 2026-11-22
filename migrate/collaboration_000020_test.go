@@ -912,3 +912,45 @@ func execTag(t *testing.T, conn *pgx.Conn, role, extra, sql string, args ...any)
 	})
 	return n, err
 }
+
+// DB-US-45, review FR-1: the settings row must point at a live collaboration agent.
+func TestTeamCollaborationDeadAgent(t *testing.T) {
+	conn := newCollab(t)
+	collabAgents(t, conn)
+	add := func() error {
+		_, err := conn.Exec(t.Context(), `INSERT INTO afs.team_collaboration (team_id, agent_id) VALUES ($1, $2)`, teamA, collA)
+		return err
+	}
+	t.Run("deleting 55000", func(t *testing.T) {
+		mustExec(t, conn, `UPDATE afs.agents SET state = 'deleting' WHERE id = $1`, collA)
+		wantState(t, add(), "55000")
+	})
+	t.Run("deleted 55000", func(t *testing.T) {
+		mustExec(t, conn, `UPDATE afs.agents SET state = 'deleted', deleted_at = now() WHERE id = $1`, collA)
+		wantState(t, add(), "55000")
+		if n := count(t, conn, `SELECT count(*) FROM afs.team_collaboration WHERE team_id = $1`, teamA); n != 0 {
+			t.Fatal("a row was stored for a dead agent")
+		}
+	})
+	live := cid("agt", 50)
+	t.Run("update of agent_id to a dead agent 55000", func(t *testing.T) {
+		wantOK(t, addAgent(t, conn, live, teamA, "paperclip2", "collaboration", tplCollab, "dedicated"))
+		mustExec(t, conn, `INSERT INTO afs.team_collaboration (team_id, agent_id) VALUES ($1, $2)`, teamA, live)
+		wantState(t, mustErr(conn, t, `UPDATE afs.team_collaboration SET agent_id = $1 WHERE team_id = $2`, collA, teamA), "55000")
+		mustExec(t, conn, `UPDATE afs.team_collaboration SET web_ui_enabled = false WHERE team_id = $1`, teamA)
+	})
+	t.Run("enabled and paused agents are accepted", func(t *testing.T) {
+		mustExec(t, conn, `DELETE FROM afs.team_collaboration WHERE team_id = $1`, teamA)
+		for _, state := range []string{"enabled", "paused"} {
+			mustExec(t, conn, `UPDATE afs.agents SET state = $2 WHERE id = $1`, live, state)
+			mustExec(t, conn, `INSERT INTO afs.team_collaboration (team_id, agent_id) VALUES ($1, $2)`, teamA, live)
+			mustExec(t, conn, `DELETE FROM afs.team_collaboration WHERE team_id = $1`, teamA)
+		}
+	})
+}
+
+func mustErr(conn *pgx.Conn, t *testing.T, sql string, args ...any) error {
+	t.Helper()
+	_, err := conn.Exec(t.Context(), sql, args...)
+	return err
+}

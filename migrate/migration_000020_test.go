@@ -110,29 +110,26 @@ func TestMigration000020(t *testing.T) {
 	t.Run("pre-flight refuses when afs_edge is missing", func(t *testing.T) {
 		conn, migs := atBefore020(t)
 		ctx := t.Context()
-		if _, err := conn.Exec(ctx, `ALTER ROLE afs_edge RENAME TO afs_edge_hidden`); err != nil {
+		// The rename and the migration run in one transaction that is always rolled back: a role is global to the
+		// cluster, so it must never be renamed outside a transaction.
+		tx, err := conn.Begin(ctx)
+		if err != nil {
 			t.Fatal(err)
 		}
-		restored := false
-		restore := func() {
-			if !restored {
-				restored = true
-				_, _ = conn.Exec(t.Context(), `ALTER ROLE afs_edge_hidden RENAME TO afs_edge`)
-			}
+		if _, err := tx.Exec(ctx, `ALTER ROLE afs_edge RENAME TO afs_edge_hidden`); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			// the test context is cancelled by now
-			c, err := pgx.Connect(t.Context(), conn.Config().ConnString())
-			if err == nil {
-				_, _ = c.Exec(t.Context(), `ALTER ROLE afs_edge_hidden RENAME TO afs_edge`)
-				_ = c.Close(t.Context())
-			}
-		})
-		_, err := migrate.Up(ctx, conn, migs)
-		restore()
+		_, err = tx.Exec(ctx, migs[firstCollaborationVersion-1].Up)
+		if rb := tx.Rollback(ctx); rb != nil {
+			t.Fatal(rb)
+		}
 		var pg *pgconn.PgError
 		if !errors.As(err, &pg) || pg.Code != "55000" || !strings.Contains(pg.Message, "bootstrap-roles") {
 			t.Fatalf("want 55000 naming bootstrap-roles, got %v", err)
+		}
+		if n := scalar[int](t, conn, "", `SELECT count(*) FROM pg_roles WHERE rolname = 'afs_edge'`); n != 1 {
+			t.Fatal("afs_edge is not back after the rollback")
 		}
 		if v, _ := migrate.Version(ctx, conn); v != firstCollaborationVersion-1 {
 			t.Fatalf("version %d after a refused migration", v)
@@ -141,7 +138,7 @@ func TestMigration000020(t *testing.T) {
 			t.Fatal("the refused migration left objects behind")
 		}
 		if n, err := migrate.Up(ctx, conn, migs); err != nil || n != 1 {
-			t.Fatalf("up after restoring the role: n=%d err=%v", n, err)
+			t.Fatalf("up with the role present: n=%d err=%v", n, err)
 		}
 	})
 

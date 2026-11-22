@@ -281,12 +281,19 @@ CREATE FUNCTION afs.team_collaboration_guard() RETURNS trigger
   SET search_path = pg_catalog, afs
 AS $$
 DECLARE
-  v_role text;
+  a     afs.agents;
 BEGIN
-  SELECT a.role INTO v_role FROM afs.agents a WHERE a.team_id = NEW.team_id AND a.id = NEW.agent_id;
-  IF FOUND AND v_role <> 'collaboration' THEN
-    RAISE EXCEPTION 'agent % is not a collaboration agent', NEW.agent_id
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'team_collaboration_agent_role';
+  SELECT * INTO a FROM afs.agents x WHERE x.team_id = NEW.team_id AND x.id = NEW.agent_id;
+  IF FOUND THEN
+    IF a.role <> 'collaboration' THEN
+      RAISE EXCEPTION 'agent % is not a collaboration agent', NEW.agent_id
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'team_collaboration_agent_role';
+    END IF;
+    -- The cleanup trigger removes the row when the agent starts deleting; do not let it come back for a dead agent.
+    IF a.deleted_at IS NOT NULL OR a.state IN ('deleting', 'deleted') THEN
+      RAISE EXCEPTION 'collaboration agent % is %', NEW.agent_id, a.state
+        USING ERRCODE = 'object_not_in_prerequisite_state';
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
@@ -731,6 +738,11 @@ BEGIN
     INSERT INTO afs.secrets (id, team_id, name, description, secrets_manager_arn, origin, managed_by, agent_id)
     VALUES (v_sec, p_team_id, 'paperclip-agent-api-key', '', p_secret_arn, 'managed', 'afs', p_agent_id);
   END IF;
+  IF EXISTS (SELECT 1 FROM afs.agent_secret_bindings b
+              WHERE b.agent_id = p_agent_id AND b.target = 'PAPERCLIP_AGENT_API_KEY' AND b.secret_id <> v_sec) THEN
+    RAISE EXCEPTION 'target PAPERCLIP_AGENT_API_KEY of agent % is already bound to another secret', p_agent_id
+      USING ERRCODE = 'unique_violation';
+  END IF;
   INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target)
   VALUES (p_team_id, p_agent_id, v_sec, 'env', 'PAPERCLIP_AGENT_API_KEY')
   ON CONFLICT (agent_id, target) DO NOTHING;
@@ -919,6 +931,10 @@ BEGIN
   IF coalesce(cardinality(p_groups), 0) > 500 THEN
     RAISE EXCEPTION 'at most 500 groups' USING ERRCODE = 'invalid_parameter_value';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM afs.team_collaboration c JOIN afs.teams t ON t.id = c.team_id
+                  WHERE c.team_id = p_team_id AND t.state NOT IN ('deleting', 'deleted') AND t.deleted_at IS NULL) THEN
+    RAISE EXCEPTION 'team % has no live collaboration agent', p_team_id USING ERRCODE = 'foreign_key_violation';
+  END IF;
   INSERT INTO afs.collab_edge_handoffs (code_hash, team_id, host, issuer, subject, provider_id, groups, expires_at)
   VALUES (p_code_hash, p_team_id, p_host, p_issuer, p_subject, p_provider_id, coalesce(p_groups, '{}'), v_exp);
   RETURN v_exp;
@@ -955,7 +971,9 @@ AS $$
 DECLARE
   s afs.collab_edge_sessions;
 BEGIN
-  SELECT * INTO s FROM afs.collab_edge_sessions x WHERE x.id_hash = p_id_hash AND x.revoked_at IS NULL AND x.expires_at > now();
+  SELECT x.* INTO s FROM afs.collab_edge_sessions x JOIN afs.teams t ON t.id = x.team_id
+   WHERE x.id_hash = p_id_hash AND x.revoked_at IS NULL AND x.expires_at > now()
+     AND t.state NOT IN ('deleting', 'deleted') AND t.deleted_at IS NULL;
   IF NOT FOUND THEN
     RETURN;
   END IF;
@@ -1053,6 +1071,9 @@ BEGIN
   IF coalesce(cardinality(p_groups), 0) > 500 THEN
     RAISE EXCEPTION 'at most 500 groups' USING ERRCODE = 'invalid_parameter_value';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM afs.teams t WHERE t.id = p_team_id AND t.state NOT IN ('deleting', 'deleted') AND t.deleted_at IS NULL) THEN
+    RETURN;
+  END IF;
   SELECT u.id INTO v_user
     FROM afs.users u JOIN afs.identity_providers p ON p.issuer_url = u.oidc_issuer
    WHERE p.id = p_provider_id AND u.oidc_subject = p_subject AND u.disabled_at IS NULL;
@@ -1081,7 +1102,8 @@ DECLARE
   k afs.api_keys;
   v_state text;
 BEGIN
-  SELECT * INTO k FROM afs.api_keys a WHERE a.key_sha256 = p_key_sha256 AND a.team_id = p_team_id;
+  SELECT a.* INTO k FROM afs.api_keys a JOIN afs.teams t ON t.id = a.team_id
+   WHERE a.key_sha256 = p_key_sha256 AND a.team_id = p_team_id AND t.state NOT IN ('deleting', 'deleted') AND t.deleted_at IS NULL;
   IF NOT FOUND THEN
     RETURN;
   END IF;

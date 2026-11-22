@@ -408,6 +408,40 @@ func TestCollabKeyFunctions(t *testing.T) {
 			t.Fatalf("arn %s", got)
 		}
 	})
+	t.Run("binding conflict 23505", func(t *testing.T) {
+		mustExec(t, conn, `INSERT INTO afs.agent_collaboration (team_id, agent_id, connect) VALUES ($1, $2, true)`, teamA, wrkA2)
+		mustExec(t, conn, `INSERT INTO afs.secrets (id, team_id, name, secrets_manager_arn, origin)
+			VALUES ($1, $2, 'own-key', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:' || afs.secret_path($2, NULL, NULL, 'own-key') || '-AbCdEf', 'managed')`, cid("sec", 70), teamA)
+		mustExec(t, conn, `INSERT INTO afs.agent_secret_bindings (team_id, agent_id, secret_id, delivery, target) VALUES ($1, $2, $3, 'env', 'PAPERCLIP_AGENT_API_KEY')`, teamA, wrkA2, cid("sec", 70))
+		audits := count(t, conn, `SELECT count(*) FROM afs.audit_log WHERE action = 'RecordCollabAgentKey'`)
+		_, err := call("afs_reconciler", rec, teamA, wrkA2, keyARN("indexer2", "paperclip-agent-api-key", "AbCdEf"))
+		wantState(t, err, "23505")
+		if n := count(t, conn, `SELECT count(*) FROM afs.secrets WHERE agent_id = $1 AND name = 'paperclip-agent-api-key'`, wrkA2); n != 0 {
+			t.Fatalf("%d key secrets after a refused call", n)
+		}
+		if got := scalar[string](t, conn, "", `SELECT secret_id FROM afs.agent_secret_bindings WHERE agent_id = $1 AND target = 'PAPERCLIP_AGENT_API_KEY'`, wrkA2); got != cid("sec", 70) {
+			t.Fatalf("binding changed to %s", got)
+		}
+		if n := count(t, conn, `SELECT count(*) FROM afs.audit_log WHERE action = 'RecordCollabAgentKey'`); n != audits {
+			t.Fatal("a refused call wrote an audit row")
+		}
+		mustExec(t, conn, `UPDATE afs.agent_collaboration SET connect = false WHERE agent_id = $1`, wrkA2)
+		mustExec(t, conn, `DELETE FROM afs.agent_secret_bindings WHERE agent_id = $1`, wrkA2)
+	})
+	t.Run("repeat call is idempotent", func(t *testing.T) {
+		audits := count(t, conn, `SELECT count(*) FROM afs.audit_log WHERE action = 'RecordCollabAgentKey'`)
+		again, err := call("afs_reconciler", rec, teamA, wrkA, keyARN("indexer", "paperclip-agent-api-key", "ZzZzZz"))
+		wantOK(t, err)
+		if again != secret {
+			t.Fatal("a second identical call made a new secret")
+		}
+		if n := count(t, conn, `SELECT count(*) FROM afs.agent_secret_bindings WHERE agent_id = $1`, wrkA); n != 1 {
+			t.Fatalf("%d bindings", n)
+		}
+		if n := count(t, conn, `SELECT count(*) FROM afs.audit_log WHERE action = 'RecordCollabAgentKey'`); n != audits+1 {
+			t.Fatalf("audit rows %d -> %d, want one per call", audits, n)
+		}
+	})
 	t.Run("not connected 55000", func(t *testing.T) {
 		_, err := call("afs_reconciler", rec, teamA, wrkA2, keyARN("indexer2", "paperclip-agent-api-key", "AbCdEf"))
 		wantState(t, err, "55000")

@@ -576,6 +576,19 @@ func TestCollaborationAccess(t *testing.T) {
 			t.Fatalf("%d requests %d bytes", req, bytes)
 		}
 	})
+	t.Run("one bad row fails the whole batch", func(t *testing.T) {
+		before := count(t, conn, `SELECT count(*) FROM afs.collaboration_access`)
+		_, err := record(
+			access(b, teamA, "web_ui", "user", "usr_atomic1", "allowed", false, 1, 0),
+			access(b, teamA, "web_ui", "user", "usr_atomic2", "lost", false, 1, 0),
+			access(b, teamA, "web_ui", "user", "usr_atomic3", "allowed", false, 1, 0))
+		if sqlState(err) != "23514" {
+			t.Fatalf("want 23514, got %v", err)
+		}
+		if after := count(t, conn, `SELECT count(*) FROM afs.collaboration_access`); after != before {
+			t.Fatalf("rows %d -> %d: the batch was partly applied", before, after)
+		}
+	})
 	t.Run("unknown team skipped", func(t *testing.T) {
 		n, err := record(access(b, cid("team", 88), "web_ui", "user", "usr_9", "allowed", false, 1, 0), access(b, teamB, "web_ui", "user", "usr_b", "allowed", false, 1, 0))
 		wantOK(t, err)
@@ -776,6 +789,58 @@ func TestEdgeSessions(t *testing.T) {
 		if len(rows) != 0 || count(t, conn, `SELECT count(*) FROM afs.collab_edge_sessions`) != 0 {
 			t.Fatal("an expired code created a session")
 		}
+	})
+	t.Run("handoff needs a live team with a collaboration agent 23503", func(t *testing.T) {
+		code := func(n string) []byte { return sha("c-team-" + n) }
+		mk := func(team string) error {
+			_, err := edgeRows(t, conn, `SELECT afs.collab_handoff_create($1, $2, 'h.collab.example.com', 'https://idp.example.com', 'sub-1', $3, '{}')`, code(team), team, idpP1)
+			return err
+		}
+		wantState(t, mk(cid("team", 88)), "23503")
+		plain := cid("team", 3)
+		mustExec(t, conn, `INSERT INTO afs.teams (id, slug, display_name, cost_center, owner_email, max_budget_usd) VALUES ($1, 'plain', 'Plain', 'CC1', 'p@example.com', 10)`, plain)
+		wantState(t, mk(plain), "23503")
+		mustExec(t, conn, `UPDATE afs.teams SET state = 'deleting' WHERE id = $1`, teamB)
+		wantState(t, mk(teamB), "23503")
+		mustExec(t, conn, `UPDATE afs.teams SET state = 'active' WHERE id = $1`, teamB)
+		wantOK(t, mk(teamB))
+		if n := count(t, conn, `SELECT count(*) FROM afs.collab_edge_handoffs WHERE team_id IN ($1, $2)`, cid("team", 88), plain); n != 0 {
+			t.Fatalf("%d rows for refused teams", n)
+		}
+	})
+	t.Run("a deleting team's session and principals are gone", func(t *testing.T) {
+		_, err := edgeRows(t, conn, `SELECT afs.collab_handoff_create($1, $2, 'b.collab.example.com', 'https://idp.example.com', 'sub-1', $3, '{}')`, sha("c-dead"), teamB, idpP1)
+		wantOK(t, err)
+		rows, err := consume("c-dead", "b.collab.example.com", "s-dead")
+		wantOK(t, err)
+		if len(rows) != 1 || len(get("s-dead")) != 1 {
+			t.Fatal("session of an active team not returned")
+		}
+		mustExec(t, conn, `UPDATE afs.teams SET state = 'deleting' WHERE id = $1`, teamB)
+		if len(get("s-dead")) != 0 {
+			t.Error("session of a deleting team returned")
+		}
+		got, err := principal(t, conn, teamB, "sub-1", idpP1, []string{"grp-sec"})
+		wantOK(t, err)
+		if len(got) != 0 {
+			t.Errorf("principal of a deleting team: %v", got)
+		}
+		kr, err := edgeRows(t, conn, `SELECT key_id FROM afs.collab_principal_key($1, $2)`, teamB, sha("key-5"))
+		wantOK(t, err)
+		if len(kr) != 0 {
+			t.Errorf("key of a deleting team: %v", kr)
+		}
+		revoked, err := edgeRows(t, conn, `SELECT afs.collab_session_revoke($1)`, sha("s-dead"))
+		wantOK(t, err)
+		if revoked[0] != "true" {
+			t.Error("a session of a deleting team can still be revoked: want true")
+		}
+		mustExec(t, conn, `UPDATE afs.teams SET state = 'suspended' WHERE id = $1`, teamB)
+		mustExec(t, conn, `UPDATE afs.collab_edge_sessions SET revoked_at = NULL WHERE id_hash = $1`, sha("s-dead"))
+		if len(get("s-dead")) != 1 {
+			t.Error("a suspended team's session must stay readable")
+		}
+		mustExec(t, conn, `UPDATE afs.teams SET state = 'active' WHERE id = $1`, teamB)
 	})
 	t.Run("duplicate hash 23505", func(t *testing.T) {
 		_, err := create("c-dup", host)
