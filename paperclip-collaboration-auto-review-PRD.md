@@ -178,3 +178,21 @@ PostgreSQL 16 locally (CI runs 17), the existing test harness, `golangci-lint` v
 | Purge scans the tables by `expires_at` without an index | Info | Tables are small (rows live under 24 hours); revisit with the M3 load test |
 | `afs_edge` has no per-role `statement_timeout` | Info | Set on the LOGIN user in Terraform (`-restapi`) |
 | Positive: catalog comparison of the down migration, the catalog-driven isolation tests and the red-step check against 000019 | Observation | Keep as the pattern for later migrations |
+
+## 10. PRD review record (step 6)
+
+Verdict: **Ready for spec.**
+
+| Dimension | Status | Note |
+|---|---|---|
+| Problem clarity | Pass | Each finding names the function, the failure and the consumer effect |
+| Scope definition | Pass | Goals and non-goals explicit; 000020 is corrected in place because it is unreleased |
+| Functional completeness | Pass | FR-1 to FR-6, atomic, each tied to a finding |
+| NFR coverage | Pass | Compatibility, safety, performance, security, observability, quality |
+| Acceptance criteria | Pass | Numbered and testable (named error codes and row counts) |
+| Dependency identification | Pass | Toolchain and harness named; no external team |
+| Open questions | Pass | RQ-1 and RQ-2 with defaults |
+| Guidance | Pass | TDD (section 5.1), review per fix (5.2), agent teammates (5.3), git worktrees (5.4) |
+| Priorities | Pass | No P0 (nothing loses data, leaks a secret or breaks isolation); P1 are real integrity, safety-of-the-test-cluster and silent-failure gaps |
+
+Changes made in review: added this record; confirmed FR-2's criterion 3 is checkable by a grep in the test suite.
