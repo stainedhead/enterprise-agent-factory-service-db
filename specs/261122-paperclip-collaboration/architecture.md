@@ -32,9 +32,9 @@ through `collab_routes()`; link state written by reconciler; key rows through th
 
 ## Architectural decisions
 
-1. **Trigger ordering.** Names are chosen so the guard fires before `secrets_managed_path` (`secrets_a_guard_...`
-   would be unusual; instead the guard is one function that also owns path derivation for `paperclip` rows, and
-   `secrets_managed_path` is replaced to skip them). Triggers on one table fire in name order; the tests prove outcomes.
+1. **Trigger ordering.** Same-event row triggers fire in name order. `secrets_managed_guard` sorts before
+   `secrets_managed_path`, so the guard runs first for every write; the replaced `secrets_managed_path` derives path
+   and name for `paperclip` rows itself. On `agents`, `agents_collaboration_guard` runs before `agents_touch`. Outcomes are proven by tests.
 2. **Principal is the session user.** Guards read `current_user` (as `team_guardrail_guard` does); `SECURITY DEFINER`
    functions run as the owner, which the guards treat as allowed.
 3. **No policy for session tables.** RLS enabled, no policy, no grant: owner-run functions only.

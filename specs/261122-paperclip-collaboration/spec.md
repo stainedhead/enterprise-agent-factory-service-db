@@ -79,6 +79,16 @@ column. Operators must run `afs-migrate bootstrap-roles` before 000020 (the migr
 Every *Proven by* test of the PRD exists and passes against PostgreSQL; `make gate` and `make test-db` green;
 up/down/up passes and the down leaves the catalog equal to 000019's; `docs/data-model.md` updated.
 
+## 9a. Edge cases and open questions
+
+- Edge cases covered by the stories: concurrent single-use handoff (one winner), replacement agent while the old one is
+  `deleting` (`23505`), second call of cleanup and of `instantiate_work_order_team` (no-ops), unknown team in a fact batch
+  (skipped), empty or null inputs (NULL base domain, empty groups), permission boundaries (every role's denied case).
+- DB-OQ-10 (worker deletion disconnects its link): default, no trigger. DB-OQ-11 (`linked` while disconnected not refused):
+  default, not refused. DB-OQ-12 (swarm model): default, first pool's model. All three owned by restapi and db, none blocks.
+- Review verdict 2026-11-22: implementation-ready. Dimensions all Pass; the one Warning (trigger ordering was vague) is fixed
+  in architecture.md.
+
 ## 10. Risks and mitigation
 
 | Risk | Mitigation |
