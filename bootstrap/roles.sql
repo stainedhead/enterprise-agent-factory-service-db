@@ -10,12 +10,14 @@
 --   afs_gateway     afs-gateway: reads budgets and models, reserves/settles spend, writes usage
 --   afs_billing     afs-billing: writes daily costs and reconciliations
 --   afs_readonly    reporting and support: read-only, no audit before/after payloads
+--   afs_edge        afs-edge (public collaboration endpoint, migration 000020): no table privilege, executes
+--                   a fixed set of SECURITY DEFINER functions only
 
 DO $$
 DECLARE
   r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['afs_owner', 'afs_app', 'afs_reconciler', 'afs_gateway', 'afs_billing', 'afs_readonly']
+  FOREACH r IN ARRAY ARRAY['afs_owner', 'afs_app', 'afs_reconciler', 'afs_gateway', 'afs_billing', 'afs_readonly', 'afs_edge']
   LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I NOLOGIN', r);

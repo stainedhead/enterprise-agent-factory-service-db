@@ -16,7 +16,7 @@ root (PRD and `docs/solution-design.md`). Its only code consumer is
 [enterprise-agent-factory-service-restapi](https://github.com/stainedhead/enterprise-agent-factory-service-restapi),
 which imports this module at a released tag and connects as the roles defined here.
 
-Status: feature complete (migrations 000001–000019) with integration tests for up/down/up, checksums,
+Status: feature complete (migrations 000001–000020) with integration tests for up/down/up, checksums,
 constraints, spend reservation, row-level security, the change feed and the service access functions; every PRD criterion provable here
 names its test.
 
@@ -32,7 +32,7 @@ names its test.
 ## Layout
 
 ```
-bootstrap/roles.sql       cluster-level NOLOGIN roles, run once by a DBA before migrations
+bootstrap/roles.sql       cluster-level NOLOGIN roles (incl. afs_edge from 000020), run by a DBA before migrations
 bootstrap/embed.go        exposes RolesSQL
 migrations/NNNNNN_name.up.sql / .down.sql
 migrations/embed.go       embeds all migrations (migrations.FS)
@@ -69,7 +69,7 @@ docs/data-model.md        data dictionary: every table, its purpose and its acce
   `afs.caller_sees_team(team_id)`. New team-owned tables must be added to the RLS list in a migration and
   covered by the isolation test.
 - **Privileges are least-privilege per role** (`afs_app`, `afs_reconciler`, `afs_gateway`, `afs_billing`,
-  `afs_readonly`). Grant columns, not whole tables, where a role only updates part of a row.
+  `afs_readonly`, and `afs_edge`, which holds no table privilege and reaches data only through `SECURITY DEFINER` functions). Grant columns, not whole tables, where a role only updates part of a row.
 - **Audit is append-only.** `afs.audit_log` rejects UPDATE, DELETE and TRUNCATE by trigger.
 - Update `docs/data-model.md` in the same change as any schema change.
 

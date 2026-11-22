@@ -1,7 +1,7 @@
 # Getting started
 
 This guide takes an operator from an empty PostgreSQL 17 database to the current AFS schema, and shows
-how to check it. The schema is in `migrations/` (000001–000019); the tables, functions and roles are
+how to check it. The schema is in `migrations/` (000001–000020); the tables, functions and roles are
 described in [docs/data-model.md](../docs/data-model.md).
 
 ## 1. Prerequisites
@@ -21,8 +21,8 @@ psql "$ADMIN_URL" -f bootstrap/roles.sql
 afs-migrate --database-url "$ADMIN_URL" bootstrap-roles
 ```
 
-This creates six `NOLOGIN` group roles and is safe to run again: `afs_owner`, `afs_app`,
-`afs_reconciler`, `afs_gateway`, `afs_billing`, `afs_readonly`. It sets no passwords. Give each service
+This creates seven `NOLOGIN` group roles and is safe to run again: `afs_owner`, `afs_app`,
+`afs_reconciler`, `afs_gateway`, `afs_billing`, `afs_readonly`, `afs_edge`. It sets no passwords. Give each service
 its own LOGIN user (on RDS, an IAM-authenticated `rds_iam` user) and grant it exactly one group:
 
 ```sql
@@ -33,6 +33,15 @@ CREATE USER afs_billing_login;  GRANT rds_iam, afs_billing    TO afs_billing_log
 CREATE USER afs_migrate_login;  GRANT rds_iam, afs_owner      TO afs_migrate_login;
 ```
 
+If you are upgrading an existing cluster to the release that embeds migration 000020 (Paperclip team
+collaboration), **run `afs-migrate bootstrap-roles` first**: migration 000020 needs the new `afs_edge` role and
+stops with `55000` (`role afs_edge does not exist`) without it, leaving the schema unchanged. The role has no
+privileges on any table. The collaboration edge gets its own LOGIN user:
+
+```sql
+CREATE USER afs_edge_login; GRANT rds_iam, afs_edge TO afs_edge_login;
+```
+
 Set connection limits on those LOGIN users as described in [configuration.md](configuration.md).
 
 ## 3. Apply the migrations
@@ -40,7 +49,7 @@ Set connection limits on those LOGIN users as described in [configuration.md](co
 ```bash
 export AFS_DATABASE_URL="postgres://afs_migrate_login@<host>:5432/afs?sslmode=verify-full"
 afs-migrate up          # prints: applied N migration(s)
-afs-migrate version     # prints the highest applied version, 15 at this release
+afs-migrate version     # prints the highest applied version, 20 at this release
 ```
 
 `afs-api` runs the same migrations at startup through the Go package, so in a normal deployment you only

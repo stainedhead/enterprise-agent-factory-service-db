@@ -54,6 +54,13 @@ Service admins change these through the API. Values are JSON and checked by the 
 | `work_orders.cost_center` | unset | string, 1–100 characters; cost center of a remediation team whose swarm template names none |
 | `work_orders.owner_email` | unset | string `local@domain`; owner of a remediation team whose swarm template names none |
 | `secrets.path_prefix` | `afs` | managed Secrets Manager path prefix |
+| `collab.base_domain` | null | null or a DNS name; team hostnames are `<slug>.<base domain>` (000020) |
+| `collab.public_endpoints` | true | boolean; master switch for the public collaboration endpoints |
+| `collab.allowed_source_cidrs` | `[]` | up to 100 CIDRs (no host bits) |
+| `collab.session_ttl_minutes` | 480 | 15–1440 |
+| `collab.content_scan` | `block` | `block`, `warn` or `off` |
+| `collab.max_body_mb` | 25 | 1–100 |
+| `collab.denied_spike_threshold` | 50 | 1–100000 |
 
 The full list, with the remaining keys, is in [docs/data-model.md](../docs/data-model.md).
 

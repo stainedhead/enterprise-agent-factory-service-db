@@ -48,7 +48,7 @@ func executableBy(t *testing.T, conn *pgx.Conn, fn string, allowed ...string) {
 	if public {
 		t.Errorf("%s: PUBLIC may execute it", fn)
 	}
-	for _, role := range []string{"afs_app", "afs_reconciler", "afs_gateway", "afs_billing", "afs_readonly"} {
+	for _, role := range []string{"afs_app", "afs_reconciler", "afs_gateway", "afs_billing", "afs_readonly", "afs_edge"} {
 		var may bool
 		if err := conn.QueryRow(t.Context(), `SELECT has_function_privilege($1, $2, 'EXECUTE')`, role, fn).Scan(&may); err != nil {
 			t.Fatal(err)

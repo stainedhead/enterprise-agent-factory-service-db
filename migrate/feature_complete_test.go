@@ -81,6 +81,20 @@ INSERT INTO afs.pool_secret_bindings (team_id, pool_id, secret_id, delivery, tar
 INSERT INTO afs.pool_config_values (id, team_id, pool_id, name, source, config_value) VALUES ('pcv_01JD3Z5Y8K2M4N6P8Q0R2S4TBN', '`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ', 'MODE', 'literal', 'x');
 INSERT INTO afs.pool_role_links (id, team_id, pool_id, account_id, role_name, profile_name, external_id)
  VALUES ('prl_01JD3Z5Y8K2M4N6P8Q0R2S4TBM', '`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ', '123412341234', 'afs-fix', 'search-prod', 'afs-'||md5('x'));
+-- Paperclip collaboration (000020): team B's collaboration agent, its settings and link, edge state and a hold.
+INSERT INTO afs.agent_templates (id, name, harness, allowed_image_digests, current_image_digest, capabilities) VALUES
+ ('tpl_01JD3Z5Y8K2M4N6P8Q0R2S4TBR', 'paperclip', 'paperclip', ARRAY['sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'], 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{paperclip}');
+INSERT INTO afs.agents (id, team_id, name, template, image, model_id, role, template_id, iam_identity) VALUES
+ ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4TBS', '`+teamB+`', 'paperclip', 'paperclip', 'ghcr.io/x/paperclip@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 'collaboration', 'tpl_01JD3Z5Y8K2M4N6P8Q0R2S4TBR', 'dedicated');
+INSERT INTO afs.team_collaboration (team_id, agent_id) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TBS');
+INSERT INTO afs.agent_collaboration (team_id, agent_id, connect) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', true);
+INSERT INTO afs.collaboration_access (bucket_start, team_id, surface, principal_kind, principal_id, outcome, requests)
+ VALUES (date_trunc('hour', now()), '`+teamB+`', 'web_ui', 'anonymous', '', 'allowed', 1);
+INSERT INTO afs.collab_edge_sessions (id_hash, team_id, issuer, subject, provider_id, expires_at)
+ VALUES (decode(repeat('01',32),'hex'), '`+teamB+`', 'https://idp.example.com', 'sub-b', 'idp_x', now() + interval '1 hour');
+INSERT INTO afs.collab_edge_handoffs (code_hash, team_id, host, issuer, subject, provider_id, expires_at)
+ VALUES (decode(repeat('02',32),'hex'), '`+teamB+`', 'search.collab.example.com', 'https://idp.example.com', 'sub-b', 'idp_x', now() + interval '1 minute');
+INSERT INTO afs.collab_hostname_holds (slug, team_id, held_until) VALUES ('gone-team', 'team_01JD3Z5Y8K2M4N6P8Q0R2S4TBT', now() + interval '10 days');
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -748,7 +762,7 @@ func TestRetentionDropsEveryFactTable(t *testing.T) {
 		if _, err := tx.Exec(ctx, `SET LOCAL ROLE afs_reconciler`); err != nil {
 			return err
 		}
-		for _, fn := range []string{"ensure_usage_partition", "ensure_activity_partition", "ensure_traffic_partition"} {
+		for _, fn := range []string{"ensure_usage_partition", "ensure_activity_partition", "ensure_traffic_partition", "ensure_collaboration_access_partition"} {
 			for _, m := range []time.Time{dropped, kept, thisMonth} {
 				if _, err := tx.Exec(ctx, `SELECT afs.`+fn+`($1)`, m.Format("2006-01-02")); err != nil {
 					return fmt.Errorf("%s(%s): %w", fn, m.Format("2006-01"), err)
@@ -766,7 +780,7 @@ func TestRetentionDropsEveryFactTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	suffix := dropped.Format("200601")
-	want := map[string]bool{"usage_events_" + suffix: true, "agent_activity_" + suffix: true, "external_traffic_" + suffix: true}
+	want := map[string]bool{"usage_events_" + suffix: true, "agent_activity_" + suffix: true, "external_traffic_" + suffix: true, "collaboration_access_" + suffix: true}
 	if len(names) != len(want) {
 		t.Errorf("dropped %v, want %v", names, want)
 	}
@@ -775,7 +789,7 @@ func TestRetentionDropsEveryFactTable(t *testing.T) {
 			t.Errorf("dropped %s, which is within retention", n)
 		}
 	}
-	for _, base := range []string{"usage_events", "agent_activity", "external_traffic"} {
+	for _, base := range []string{"usage_events", "agent_activity", "external_traffic", "collaboration_access"} {
 		for _, m := range []time.Time{kept, thisMonth} {
 			name := base + "_" + m.Format("200601")
 			if n := scalar[int](t, conn, "", `SELECT count(*) FROM pg_class WHERE relname = $1`, name); n != 1 {

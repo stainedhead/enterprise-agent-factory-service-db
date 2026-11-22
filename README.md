@@ -78,9 +78,9 @@ make cover      # migrate coverage (set AFS_TEST_DATABASE_URL for the integratio
 
 ## Status
 
-Feature complete at schema `000019`: migrations `000001_core_schema` to `000019_work_order_secrets`, with
+Feature complete at schema `000020`: migrations `000001_core_schema` to `000020_paperclip_collaboration`, with
 integration tests that prove every acceptance criterion of the [PRD](enterprise-agent-factory-service-db-PRD.md)
-this repository can prove. A release tag is pending; `-restapi` pins the current `main` until it exists.
+this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. A release tag is pending; `-restapi` pins the current `main` until it exists.
 
 ## Contributing
 
