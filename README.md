@@ -1,14 +1,52 @@
 # enterprise-agent-factory-service-db
 
-The RDS PostgreSQL database for the Enterprise Agent Factory Service: schema and migrations for all
-desired state, database roles and row-level security, real-time spend reservation functions, config
-revisions and an append-only audit log. Ships as a Go module (`migrations`, `migrate`) used by the REST
-API, plus the `afs-migrate` command.
+**The database of the [Enterprise Agent Factory Service](https://github.com/stainedhead/enterprise-agent-factory-service):
+the RDS PostgreSQL 17 schema that holds every team's desired state, and the roles and row-level security that
+keep teams apart.**
 
-Part of [enterprise-agent-factory-service](https://github.com/stainedhead/enterprise-agent-factory-service).
-Data dictionary: [docs/data-model.md](docs/data-model.md).
+It ships as a Go module (`migrations`, `migrate`) that `afs-api` runs at startup, plus the `afs-migrate`
+command for operators. All desired state lives here: teams, people and role bindings, agents and their
+identities, secret *references*, models and prices, budgets and spend, usage and costs, delivery settings,
+swarms and work orders, together with reconcile status, the event outbox, config revisions and the
+append-only audit log.
 
-**Status:** feature complete (schema 000019) — migrations `000001_core_schema`, `000002_roles_and_rls`, `000003_agent_singleton_secret_paths`, `000004_agent_persistent_storage`, `000005_configuration_values`, `000006_cross_account_roles`, `000007_external_systems`, `000008_reporting_activity`, `000009_identity_providers_team_guardrails`, `000010_cost_tags_team_idp_price_sync`, `000011_tag_snapshots_reports_isolation_idempotency`, `000012_swarms_ephemeral_teams_work_orders`, `000013_hardening_spend_periods_change_feed`, `000014_agent_templates_export_bundles`, `000015_feature_complete_gaps` and `000016_service_access_functions`, `000017_schema_version_cli_client_id`, `000018_report_rollups_followups` and `000019_work_order_secrets`, with integration tests that prove every acceptance criterion of the [PRD](enterprise-agent-factory-service-db-PRD.md) this repository can prove.
+| | |
+|---|---|
+| **Operate it** | [Getting started](user-docs/getting-started.md) · [Configuration](user-docs/configuration.md) · [Operations](user-docs/operations.md) |
+| **Understand it** | [Data dictionary](docs/data-model.md) · [Technical details](docs/technical-details.md) · [Decisions](docs/architectural-decision-record.md) · [PRD](enterprise-agent-factory-service-db-PRD.md) |
+| **Change it** | [CONTRIBUTING.md](CONTRIBUTING.md) · [AGENTS.md](AGENTS.md) · [Database contract](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/docs/contracts/database-contract.md) |
+
+## Where it fits
+
+![Architecture overview](docs/images/architecture-overview.svg)
+
+The only code consumer is [-restapi](https://github.com/stainedhead/enterprise-agent-factory-service-restapi),
+which imports this module at a released tag and connects as the roles defined here. The reconciler listens to
+the change feed (`LISTEN afs_desired_state`), and the gateway reserves and settles spend through functions
+in this schema.
+
+## The schema
+
+![Schema by domain](docs/images/db-schema-domains.svg)
+
+Design rules that every migration follows:
+
+- **Everything in schema `afs`**, tracked in `public.afs_schema_migrations`; migrations are append-only once
+  merged, contiguous, one transaction each, and online-safe.
+- **Team scoping.** Every team-owned table has `team_id`; references inside a team use composite
+  `(team_id, id)` foreign keys, so a row can never point at another team's row.
+- **No secret values, ever.** Secrets are Secrets Manager ARNs and metadata. A test fails if a column name
+  looks like it could hold a value.
+- **Money is `numeric` USD**; enumerations are `text` + `CHECK`; ids are prefixed ULIDs (`team_…`, `agt_…`).
+- **Desired-state tables** carry `version` (for `If-Match`), `generation`, timestamps and a revision trigger.
+
+## Roles and row-level security
+
+![Roles and row-level security](docs/images/db-roles-rls.svg)
+
+Each service connects as its own least-privilege role. `afs-api` sets `afs.actor`, `afs.team_ids` and
+`afs.service_admin` with `SET LOCAL` in every transaction, so PostgreSQL itself hides other teams' rows even if
+application code got a filter wrong. `afs.audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`.
 
 ## Use
 
@@ -27,13 +65,9 @@ migs, _ := migrate.Load(migrations.FS)
 n, err := migrate.Up(ctx, conn, migs) // each migration waits at most 10 s for a lock (migrate.WithLockTimeout)
 ```
 
-## Operator guides
+## Build and test
 
-- [Getting started](user-docs/getting-started.md): roles, migrations, checks, tests
-- [Configuration reference](user-docs/configuration.md): `afs-migrate` options, session and runtime settings, limits
-- [Operations](user-docs/operations.md): scheduled jobs, releases, backups and restore, troubleshooting
-
-## Test
+Requires Go 1.27 (pinned in `go.mod`), `make`, and PostgreSQL 17 or Docker for the integration tests.
 
 ```bash
 make gate       # unit tests, lint, build
@@ -42,4 +76,14 @@ make test-db    # up/down/up, checksums, constraints, spend reservation, row-lev
 make cover      # migrate coverage (set AFS_TEST_DATABASE_URL for the integration tests)
 ```
 
-Contributor and agent rules: [AGENTS.md](AGENTS.md). Why this repository exists: [INTENT.md](INTENT.md).
+## Status
+
+Feature complete at schema `000019`: migrations `000001_core_schema` to `000019_work_order_secrets`, with
+integration tests that prove every acceptance criterion of the [PRD](enterprise-agent-factory-service-db-PRD.md)
+this repository can prove. A release tag is pending; `-restapi` pins the current `main` until it exists.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and the product-wide
+[contributing guide](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/CONTRIBUTING.md).
+Why this repository exists: [INTENT.md](INTENT.md).
