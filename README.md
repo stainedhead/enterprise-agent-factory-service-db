@@ -78,9 +78,9 @@ make cover      # migrate coverage (set AFS_TEST_DATABASE_URL for the integratio
 
 ## Status
 
-Feature complete at schema `000020`: migrations `000001_core_schema` to `000020_paperclip_collaboration`, with
+Feature complete at schema `000021`: migrations `000001_core_schema` to `000021_collab_routes_provider_clients`, with
 integration tests that prove every acceptance criterion of the [PRD](enterprise-agent-factory-service-db-PRD.md)
-this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. The release is `v1.0.1` (see `CHANGELOG.md`); `-db` and `-restapi` share version numbers.
+this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. 000021 adds the identity provider's console and CLI client ids to `collab_routes()` so the edge accepts REST bearer tokens from CLI and console sign-in. The release is `v1.0.1` (see `CHANGELOG.md`); `-db` and `-restapi` share version numbers.
 
 ## Contributing
 

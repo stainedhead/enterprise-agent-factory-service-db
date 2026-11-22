@@ -1,6 +1,6 @@
 # Data model
 
-Schema `afs`, PostgreSQL 17. Current version: migration 000020. Source: `migrations/`. Keep this file in step with every migration.
+Schema `afs`, PostgreSQL 17. Current version: migration 000021. Source: `migrations/`. Keep this file in step with every migration.
 
 ## Entity overview
 
@@ -209,7 +209,7 @@ Changes to existing tables:
 | `afs.remove_collab_agent_key(team_id, agent_id) → boolean` | reconciler (000020) | Removes that secret row after the reconciler deleted the secret. Audit only |
 | `afs.record_collab_board_key(team_id, collab_agent_id, secret_arn) → text` | reconciler (000020) | Records Paperclip's board key as a `managed_by = 'paperclip'` registered secret of the collaboration agent; never bound |
 | `afs.ensure_collaboration_access_partition(month) → text` | reconciler (000020) | Creates the monthly partition of `collaboration_access`; `drop_partitions_older_than(months)` now also drops its expired months |
-| `afs.collab_routes()` | `afs_edge` (000020) | One row per team with a live collaboration agent: hostname `<slug>.<collab.base_domain>`, team and agent state, stored and effective web UI and REST API flags (stored choice AND `may_expose_collaboration` AND `collab.public_endpoints` AND base domain; the web UI also needs a provider client), `ready` and `not_ready_reason` (`starting`, `paused`, `team_suspended`), service name and port, and the team's identity provider (issuer, groups claim, collab client id and secret ARN). Deleting and deleted teams are omitted |
+| `afs.collab_routes()` | `afs_edge` (000020; 000021 adds the two client ids) | One row per team with a live collaboration agent: hostname `<slug>.<collab.base_domain>`, team and agent state, stored and effective web UI and REST API flags (stored choice AND `may_expose_collaboration` AND `collab.public_endpoints` AND base domain; the web UI also needs a provider client), `ready` and `not_ready_reason` (`starting`, `paused`, `team_suspended`), service name and port, and the team's identity provider (issuer, groups claim, collab client id and secret ARN, and from 000021 `provider_client_id` = `identity_providers.client_id` and `provider_cli_client_id` = `cli_client_id`, null when unset, so the edge can accept REST bearer tokens minted for the console or CLI client as audience; public OIDC client ids, not secrets). Deleting and deleted teams are omitted |
 | `afs.collab_settings()` | `afs_edge` (000020) | The `collab.*` settings only |
 | `afs.collab_principal(team_id, subject, provider_id, groups[]) → table` | `afs_edge` (000020) | The caller's bindings for the team (no rows for a deleting or deleted team): the user's (matched by issuer and subject, not disabled) and the groups'. A team's group bindings match when the provider is the team's (else the default); a service-level group binding matches its named provider. Returns `service_admin` and the team's three roles, never `security_operator`; at most 500 groups |
 | `afs.collab_principal_key(team_id, key_sha256) → table` | `afs_edge` (000020) | State of a team's API key (`active`, `expired`, `revoked`; nothing for a deleting or deleted team); updates `last_used_at` at most once a minute; no hash in the result |

@@ -137,7 +137,7 @@ func TestMigration000020(t *testing.T) {
 		if n := scalar[int](t, conn, "", `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'afs' AND c.relname = 'team_collaboration'`); n != 0 {
 			t.Fatal("the refused migration left objects behind")
 		}
-		if n, err := migrate.Up(ctx, conn, migs); err != nil || n != 1 {
+		if n, err := migrate.Up(ctx, conn, migs[:firstCollaborationVersion]); err != nil || n != 1 {
 			t.Fatalf("up with the role present: n=%d err=%v", n, err)
 		}
 	})
@@ -160,7 +160,7 @@ INSERT INTO afs.role_bindings (id, role, team_id, subject_type, group_name) VALU
 INSERT INTO afs.api_keys (id, team_id, name, role, key_prefix, key_sha256, expires_at)
  VALUES ('`+cid("key", 1)+`', '`+teamA+`', 'ci', 'team_admin', 'afs_k_ab', decode(repeat('00',32),'hex'), now() + interval '30 days')`)
 		before := queryRow(t, conn, `SELECT (SELECT version::text FROM afs.agents WHERE id = $1), (SELECT generation::text FROM afs.agents WHERE id = $1)`, wrkA)
-		if n, err := migrate.Up(ctx, conn, migs); err != nil || n != 1 {
+		if n, err := migrate.Up(ctx, conn, migs[:firstCollaborationVersion]); err != nil || n != 1 {
 			t.Fatalf("up: n=%d err=%v", n, err)
 		}
 		checks := map[string]string{
@@ -200,7 +200,7 @@ INSERT INTO afs.team_models (team_id, model_id) VALUES ('`+teamA+`', 'claude-son
 INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES
  ('`+wrkA+`', '`+teamA+`', 'indexer', 'omp', 'ghcr.io/x/img@`+collabDigest+`', 'claude-sonnet')`)
 		want := catalog(t, conn)
-		if n, err := migrate.Up(ctx, conn, migs); err != nil || n != 1 {
+		if n, err := migrate.Up(ctx, conn, migs[:firstCollaborationVersion]); err != nil || n != 1 {
 			t.Fatalf("up: n=%d err=%v", n, err)
 		}
 		if catalog(t, conn) == want {
@@ -216,7 +216,7 @@ INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES
 		if n := count(t, conn, `SELECT count(*) FROM afs.agents WHERE id = $1`, wrkA); n != 1 {
 			t.Fatal("down lost an agent")
 		}
-		if n, err := migrate.Up(ctx, conn, migs); err != nil || n != 1 {
+		if n, err := migrate.Up(ctx, conn, migs[:firstCollaborationVersion]); err != nil || n != 1 {
 			t.Fatalf("up again: n=%d err=%v", n, err)
 		}
 	})
@@ -230,7 +230,8 @@ INSERT INTO afs.agents (id, team_id, name, template, image, model_id) VALUES
 		mustExec(t, conn, `INSERT INTO afs.api_keys (id, team_id, name, role, key_prefix, key_sha256, expires_at)
 			VALUES ($1, $2, 'collab', 'team_collaborator', 'afs_k_ab', decode(repeat('00',32),'hex'), now() + interval '30 days')`, cid("key", 1), teamA)
 		mustExec(t, conn, `INSERT INTO afs.role_bindings (id, role, team_id, subject_type, group_name) VALUES ($1, 'team_viewer', $2, 'group', 'viewers')`, cid("rb", 2), teamA)
-		if n, err := migrate.Down(ctx, conn, migs, 1); err != nil || n != 1 {
+		// 000021 sits on top of 000020: take both down.
+		if n, err := migrate.Down(ctx, conn, migs, len(migs)-firstCollaborationVersion+1); err != nil || n != len(migs)-firstCollaborationVersion+1 {
 			t.Fatalf("down: n=%d err=%v", n, err)
 		}
 		for q, want := range map[string]int{
