@@ -26,7 +26,7 @@
 | 11 | Final Quality Pass              | ✅ Complete | 2026-11-22T19:09:47Z | 2026-11-22T19:11:00Z | 1 |
 | 12 | Process Analysis Report         | ✅ Complete | 2026-11-22T19:11:00Z | 2026-11-22T19:12:00Z | 1 |
 | 13 | Archive Spec                    | ✅ Complete | 2026-11-22T19:12:00Z | 2026-11-22T19:12:30Z | 0 |
-| 14 | Write PR body (PR opened by the coordinator) | ⬜ Pending | — | — | — |
+| 14 | Write PR body (PR opened by the coordinator) | ✅ Complete | 2026-11-22T19:12:30Z | 2026-11-22T19:13:00Z | 0 |
 
 Timing: step boundaries are the git commit timestamps (authoritative); runtimes are rounded to minutes and sub-minute steps show 0.
 
