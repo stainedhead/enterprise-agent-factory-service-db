@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Feature complete through schema 000019 for the original scope (every acceptance criterion provable here has a named, passing test; 000018 and 000019 are not yet traced in §4 and §5, DB-OQ-8). **2026-11-22:** extended for the Paperclip team collaboration change: migration 000020 is specified in DB-41 to DB-52 and DB-US-44 to DB-US-57 and implemented (milestone C1, spec `specs/261122-paperclip-collaboration/`; verified locally on PostgreSQL 16, CI's `postgres:17` is the authoritative run; release tag chosen at release), and the PRD review record is §11 |
+| **Status** | Feature complete through schema 000019 for the original scope (every acceptance criterion provable here has a named, passing test; 000018 and 000019 are not yet traced in §4 and §5, DB-OQ-8). **2026-11-22:** extended for the Paperclip team collaboration change: migration 000020 is specified in DB-41 to DB-52 and DB-US-44 to DB-US-57 and implemented (milestone C1, spec `specs/archive/261122-paperclip-collaboration/`; verified locally on PostgreSQL 16, CI's `postgres:17` is the authoritative run; release tag chosen at release), and the PRD review record is §11 |
 | **Change** | [Paperclip team collaboration](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/paperclip-team-collaboration-PRD.md) (COL-*, SEC-7; DB-US-44 to DB-US-47 of its §7.2, split and refined here) |
 | **Author** | J (Enterprise Architecture), drafted with Claude |
 | **Parent** | [Root PRD](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/enterprise-agent-factory-service-initial-PRD.md) (product requirements and stories US-1..US-26) |

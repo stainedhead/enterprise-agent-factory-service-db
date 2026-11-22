@@ -11,8 +11,8 @@ Created 2026-11-22. Dashboard of the 14-step flow: `paperclip-collaboration-stat
 | 2 Research and data modeling | Complete |
 | 3 Architecture and planning | Complete |
 | 4 Task breakdown | Complete |
-| 5 Implementation | Complete (18/18 tasks), review pending |
-| 6 Completion and archival | Not Started |
+| 5 Implementation | Complete (18/18 tasks); review fixes tracked in the nested auto-review spec |
+| 6 Completion and archival | Complete (archived at step 7; review fixes follow in the nested spec) |
 
 ## Phase 0 checklist
 

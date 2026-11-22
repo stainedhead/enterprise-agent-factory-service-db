@@ -1,7 +1,7 @@
 # Dev-Flow Implementation Status
 
 **PRD:** paperclip-collaboration-PRD.md
-**Spec:** specs/261122-paperclip-collaboration
+**Spec:** specs/archive/261122-paperclip-collaboration (archived at step 7)
 **Branch:** claude/project-thread-xqpqky
 **Review PRD:** paperclip-collaboration-auto-review-PRD.md
 **Process Start:** 2026-11-22T18:35:00Z
@@ -18,8 +18,8 @@
 | 4  | Documentation and User Docs     | ✅ Complete | 2026-11-22T19:10:00Z | 2026-11-22T19:25:00Z | 15 |
 | 5  | Code and Design Review          | ✅ Complete | 2026-11-22T19:25:00Z | 2026-11-22T19:45:00Z | 20 |
 | 6  | Prepare Review PRD              | ✅ Complete | 2026-11-22T19:45:00Z | 2026-11-22T19:50:00Z | 5 |
-| 7  | Archive Original Spec           | 🔄 In Progress | 2026-11-22T19:50:00Z | — | — |
-| 8  | Spec Review Fixes               | ⬜ Pending | — | — | — |
+| 7  | Archive Original Spec           | ✅ Complete | 2026-11-22T19:50:00Z | 2026-11-22T19:53:00Z | 3 |
+| 8  | Spec Review Fixes               | 🔄 In Progress | 2026-11-22T19:53:00Z | — | — |
 | 9  | Implement Review Fixes          | ⬜ Pending | — | — | — |
 | 10 | Archive Fixes Spec              | ⬜ Pending | — | — | — |
 | 11 | Final Quality Pass              | ⬜ Pending | — | — | — |

@@ -140,7 +140,7 @@ erDiagram
 
 ### Paperclip team collaboration (000020)
 
-New tables. Spec: `specs/261122-paperclip-collaboration/`; contract: root `docs/contracts/database-contract.md` section 7.2.
+New tables. Spec: `specs/archive/261122-paperclip-collaboration/`; contract: root `docs/contracts/database-contract.md` section 7.2.
 
 | Table | Purpose | Key columns and rules |
 |---|---|---|
