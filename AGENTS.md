@@ -119,7 +119,7 @@ CI runs the integration tests against a `postgres:17` service container.
 
 ## Releases
 
-Semver tags (`vX.Y.Z`). A new migration is a minor release. `-restapi` bumps its `go.mod` to adopt it.
+Semver tags (`vX.Y.Z`), recorded in `CHANGELOG.md`. **`-db` and `-restapi` release in lockstep with the same version number** (J, 2026-11-22): a `-db` release is followed by a `-restapi` release of the same version that pins it in `go.mod`. The first release is `v1.0.1` (migrations 000001–000020).
 
 ## user-docs/ rule
 
