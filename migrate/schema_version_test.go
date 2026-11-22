@@ -15,7 +15,7 @@ func TestSchemaVersionFunction(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT max(version) FROM public.afs_schema_migrations`).Scan(&want); err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{"afs_app", "afs_reconciler", "afs_gateway", "afs_billing", "afs_readonly"} {
+	for _, role := range []string{"afs_app", "afs_reconciler", "afs_gateway", "afs_billing", "afs_readonly", "afs_edge"} {
 		t.Run(role, func(t *testing.T) {
 			var got int64
 			err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
