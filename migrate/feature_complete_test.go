@@ -64,6 +64,7 @@ INSERT INTO afs.work_orders (id, kind, title, team_id) VALUES ('wo_01JD3Z5Y8K2M4
 INSERT INTO afs.usage_events (occurred_at, team_id, agent_id, model_id, request_id, outcome) VALUES (now(), '`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'claude-sonnet', 'req-b1', 'ok');
 INSERT INTO afs.agent_activity (bucket_start, team_id, agent_id, state) VALUES (date_trunc('hour', now()), '`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'idle');
 INSERT INTO afs.external_traffic (bucket_start, team_id, agent_id, host, verdict) VALUES (date_trunc('hour', now()), '`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'api.example.com', 'allowed');
+SELECT afs.rollup_reports_daily(current_date - 1, current_date + 1);
 INSERT INTO afs.cost_daily (team_id, day, source, cost_usd) VALUES ('`+teamB+`', current_date, 'gateway', 1);
 INSERT INTO afs.cost_reconciliations (team_id, day, gateway_usd, billed_usd, status) VALUES ('`+teamB+`', current_date, 1, 1, 'ok');
 INSERT INTO afs.resource_status (resource_kind, resource_id, team_id) VALUES ('agents', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', '`+teamB+`');

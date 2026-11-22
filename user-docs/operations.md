@@ -9,6 +9,7 @@ needs to know they exist and what a failure looks like.
 |---|---|---|---|
 | `afs.ensure_usage_partition(month)`, `afs.ensure_activity_partition(month)`, `afs.ensure_traffic_partition(month)` | reconciler | Monthly, before the month starts | Rows land in the `_default` partitions; nothing is lost, queries get slower |
 | `afs.drop_partitions_older_than(13)` | reconciler | Monthly | Old monthly partitions stay; storage grows |
+| `afs.rollup_reports_recent(2)` | reconciler | Every 5 to 15 minutes (7 days nightly for late samples) | Service-wide and 90-day activity and traffic reports read the daily rollups; they go stale, the five-minute tables stay correct |
 | `afs.release_expired_reservations()` | reconciler | Every minute | Held spend from a dead gateway is not returned until it runs |
 | `afs.purge_idempotency_keys()` | reconciler | Periodically | Expired keys stay; no functional effect |
 | `afs.ensure_spend_counter(budget, period_start)` | gateway, reconciler | Per call / period start | The gateway opens the period itself on the first call |
