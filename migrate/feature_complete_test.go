@@ -85,7 +85,7 @@ INSERT INTO afs.pool_role_links (id, team_id, pool_id, account_id, role_name, pr
 INSERT INTO afs.agent_templates (id, name, harness, allowed_image_digests, current_image_digest, capabilities) VALUES
  ('tpl_01JD3Z5Y8K2M4N6P8Q0R2S4TBR', 'paperclip', 'paperclip', ARRAY['sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'], 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{paperclip}');
 INSERT INTO afs.agents (id, team_id, name, template, image, model_id, role, template_id, iam_identity) VALUES
- ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4TBS', '`+teamB+`', 'paperclip', 'paperclip', 'ghcr.io/x/paperclip@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 'collaboration', 'tpl_01JD3Z5Y8K2M4N6P8Q0R2S4TBR', 'dedicated');
+ ('agt_01JD3Z5Y8K2M4N6P8Q0R2S4TBS', '`+teamB+`', 'paperclip', 'paperclip', 'ghcr.io/x/paperclip@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'claude-sonnet', 'orchestration', 'tpl_01JD3Z5Y8K2M4N6P8Q0R2S4TBR', 'dedicated');
 INSERT INTO afs.team_collaboration (team_id, agent_id) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TBS');
 INSERT INTO afs.agent_collaboration (team_id, agent_id, connect) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', true);
 INSERT INTO afs.collaboration_access (bucket_start, team_id, surface, principal_kind, principal_id, outcome, requests)
@@ -95,6 +95,11 @@ INSERT INTO afs.collab_edge_sessions (id_hash, team_id, issuer, subject, provide
 INSERT INTO afs.collab_edge_handoffs (code_hash, team_id, host, issuer, subject, provider_id, expires_at)
  VALUES (decode(repeat('02',32),'hex'), '`+teamB+`', 'search.collab.example.com', 'https://idp.example.com', 'sub-b', 'idp_x', now() + interval '1 minute');
 INSERT INTO afs.collab_hostname_holds (slug, team_id, held_until) VALUES ('gone-team', 'team_01JD3Z5Y8K2M4N6P8Q0R2S4TBT', now() + interval '10 days');
+-- Orchestration and model access (000022): selections of an agent and a pool, and a team's inference profile.
+INSERT INTO afs.agent_models (team_id, agent_id, model_id) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'claude-sonnet');
+INSERT INTO afs.pool_models (team_id, pool_id, model_id) VALUES ('`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', 'claude-sonnet');
+INSERT INTO afs.team_inference_profiles (team_id, model_id, inference_profile_arn, state)
+ VALUES ('`+teamB+`', 'claude-sonnet', 'arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc123', 'active');
 `)
 	if err != nil {
 		t.Fatal(err)

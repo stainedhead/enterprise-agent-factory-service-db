@@ -91,6 +91,39 @@ func migrated(t *testing.T) *pgx.Conn {
 	if _, err := migrate.Up(t.Context(), conn, migs); err != nil {
 		t.Fatal(err)
 	}
+	legacyFixtureDefaults(t, conn)
+	return conn
+}
+
+// legacyFixtureDefaults makes the column defaults the ones a 1.0.1 fixture assumes: its teams are inserted without
+// an orchestration agent and may expose their collaboration endpoints. It models a team that existed before 000022
+// (orchestration_required false, limit public, Web UI on) and a collaboration agent that leaves on its own. Tests of the orchestration rules use migratedStrict instead.
+func legacyFixtureDefaults(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	for _, q := range []string{
+		`ALTER TABLE afs.teams ALTER COLUMN orchestration_required SET DEFAULT false`,
+		`ALTER TABLE afs.teams ALTER COLUMN max_collaboration_exposure SET DEFAULT 'public'`,
+		`ALTER TABLE afs.team_collaboration ALTER COLUMN web_ui_exposure SET DEFAULT 'public'`,
+		// The 000020 tests drive an agent to deleting on a live team; the delete guard has its own tests.
+		`ALTER TABLE afs.agents DISABLE TRIGGER agents_orchestration_required`,
+	} {
+		if _, err := conn.Exec(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// migratedStrict is a database exactly as the migrations leave it: new teams need an orchestration agent.
+func migratedStrict(t *testing.T) *pgx.Conn {
+	t.Helper()
+	conn := connect(t)
+	migs, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Up(t.Context(), conn, migs); err != nil {
+		t.Fatal(err)
+	}
 	return conn
 }
 

@@ -398,6 +398,7 @@ INSERT INTO afs.work_orders (id, kind, title, template_id, status) VALUES ('`+wo
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedOrchestrationRuntime(t, conn)
 }
 
 // DB-US-41 (X-DB-4).
