@@ -1198,6 +1198,18 @@ agent when the swarm template asks for one, so that a swarm's people can watch i
   other agents refused 23514`, `pool secrets still work`; the existing `TestInstantiateWorkOrderTeam` and
   `TestRecordWorkOrderSecret` subtests stay green.
 
+### 5.x Orchestration agent and model access (migration 000022, release 1.1.0)
+
+Specified in [specs/261123-orchestration-and-model-access/orchestration-and-model-access-PRD.md](specs/261123-orchestration-and-model-access/orchestration-and-model-access-PRD.md); the stories continue this document's numbering and refine root stories US-34 and US-37 to US-41.
+
+**DB-US-58 · Orchestration role and the one-per-team rule.** Exactly one live orchestration agent per team from the commit that creates the team; role, reserved name and delete guard. Proven by `TestOrchestrationAgent`, `TestCreateOrchestrationAgent`, `TestWorkOrderTeamHasOrchestrationAgent`.
+
+**DB-US-59 · Exposure levels, limit and tool.** `off`, `private`, `public` per surface within the team limit; Paperclip or Buzz; settings and aliases; snapshots on a tool change. Proven by `TestCollaborationExposure`, `TestToolChangeSnapshot`, `TestOrchestrationSettings`, `TestOrchestrationCapabilities`, `TestBuzzManagedSecrets`.
+
+**DB-US-60 · Edge routes by exposure.** `orchestration_routes()` with effective level and reasons; access counts by exposure. Proven by `TestOrchestrationRoutes`, `TestRecordAccessExposure`.
+
+**DB-US-61 · Model access levels.** All, one or several models at team, agent and pool level; price rule; `model_admission`. Proven by `TestModelAccess`, `TestTeamInferenceProfiles`.
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |

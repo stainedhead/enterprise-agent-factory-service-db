@@ -16,7 +16,7 @@ root (PRD and `docs/solution-design.md`). Its only code consumer is
 [enterprise-agent-factory-service-restapi](https://github.com/stainedhead/enterprise-agent-factory-service-restapi),
 which imports this module at a released tag and connects as the roles defined here.
 
-Status: feature complete (migrations 000001–000021) with integration tests for up/down/up, checksums,
+Status: feature complete (migrations 000001–000022) with integration tests for up/down/up, checksums,
 constraints, spend reservation, row-level security, the change feed and the service access functions; every PRD criterion provable here
 names its test.
 
@@ -119,7 +119,7 @@ CI runs the integration tests against a `postgres:17` service container.
 
 ## Releases
 
-Semver tags (`vX.Y.Z`), recorded in `CHANGELOG.md`. **`-db` and `-restapi` release in lockstep with the same version number** (J, 2026-11-22): a `-db` release is followed by a `-restapi` release of the same version that pins it in `go.mod`. The first release is `v1.0.1` (migrations 000001–000021).
+Semver tags (`vX.Y.Z`), recorded in `CHANGELOG.md`. **`-db` and `-restapi` release in lockstep with the same version number** (J, 2026-11-22): a `-db` release is followed by a `-restapi` release of the same version that pins it in `go.mod`. The first release is `v1.0.1` (migrations 000001–000021); `v1.1.0` adds 000022 (orchestration agent and model access).
 
 ## user-docs/ rule
 

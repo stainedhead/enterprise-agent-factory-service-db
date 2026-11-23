@@ -1,7 +1,7 @@
 # Getting started
 
 This guide takes an operator from an empty PostgreSQL 17 database to the current AFS schema, and shows
-how to check it. The schema is in `migrations/` (000001–000021); the tables, functions and roles are
+how to check it. The schema is in `migrations/` (000001–000022); the tables, functions and roles are
 described in [docs/data-model.md](../docs/data-model.md).
 
 ## 1. Prerequisites

@@ -23,6 +23,10 @@ What it guarantees at the data layer, behind the API's own checks:
   agent's role and the team's choices, keeps Paperclip's own secrets as references the reconciler records, and
   serves the public collaboration edge through a login-less role (`afs_edge`) that has no table privilege and
   calls ten `SECURITY DEFINER` functions: routes, principals, access counts and sessions.
+- **Orchestration agent and model access (000022).** Every team has one orchestration agent (Paperclip or Buzz), created
+  with the team. Its Web UI and Web API are `off`, `private` or `public`, within a limit only a service admin sets; the
+  edge reads the effective level from `orchestration_routes()`. Agents and pools use all, one or several models,
+  narrowed from the service to the team to the agent, and a model needs a price to be callable.
 - **History.** Every desired-state change bumps a version, writes a revision and is announced on the
   `afs_desired_state` channel; the audit log is append-only.
 - **Safe migrations.** One advisory-locked runner with checksums and a per-migration lock timeout, used by

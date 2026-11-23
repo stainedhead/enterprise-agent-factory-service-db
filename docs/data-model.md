@@ -1,6 +1,6 @@
 # Data model
 
-Schema `afs`, PostgreSQL 17. Current version: migration 000021. Source: `migrations/`. Keep this file in step with every migration.
+Schema `afs`, PostgreSQL 17. Current version: migration 000022. Source: `migrations/`. Keep this file in step with every migration.
 
 ## Entity overview
 
@@ -57,7 +57,11 @@ erDiagram
     swarm_templates ||--o{ work_orders : "instantiates"
     agent_templates ||--o{ agents : "catalog"
     teams ||--o| team_collaboration : "collaboration settings"
-    agents ||--o| team_collaboration : "collaboration agent"
+    agents ||--o| team_collaboration : "orchestration agent"
+    agents ||--o{ agent_models : "selected models"
+    agent_pools ||--o{ pool_models : "selected models"
+    teams ||--o{ team_inference_profiles : "per model"
+    models ||--o{ agent_models : ""
     agents ||--o| agent_collaboration : "worker link"
     teams ||--o{ collaboration_access : "access counts"
     agent_templates ||--o{ agent_pools : "catalog"
@@ -163,6 +167,35 @@ Changes to existing tables:
 | `role_bindings`, `api_keys` | Role `team_collaborator` (team-scoped) |
 | `service_settings` | Seven `collab.*` keys with value checks: `base_domain` (DNS name or null), `public_endpoints` (boolean), `allowed_source_cidrs` (up to 100 strict CIDRs), `session_ttl_minutes` (15 to 1440), `content_scan` (block, warn, off), `max_body_mb` (1 to 100), `denied_spike_threshold` (1 to 100000) |
 
+### Team orchestration agent and model access (000022)
+
+Spec: `specs/261123-orchestration-and-model-access/`; contract: root `docs/contracts/database-contract.md` section 7.3 (decisions CD-13 to CD-25). The collaboration agent becomes the team's **orchestration agent**, one per team, created with the team; its tool is Paperclip or Buzz. Agents and pools choose **all, one or several models**, narrowing the service's and the team's set.
+
+New tables:
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `agent_models` | The models an agent with `model_access = 'selected'` may call | PK `(team_id, agent_id, model_id)`; composite FK to `agents` (cascade). Insert checks (`23514`): the model is enabled for the service (`agent_models_service`), allowed for the team (`agent_models_team`), at most 50 per agent (`agent_models_limit`). At commit (deferred): a selected agent has at least one model (`agents_models_selection_nonempty`) and its default model is among them (`agents_default_model_allowed`). RLS `app_team_scope`; `afs_app` select, insert, delete; service roles read |
+| `pool_models` | The same for pools | Same rules and constraint names with `pool_id` |
+| `team_inference_profiles` | The Bedrock application inference profile per (team, model), written by the reconciler | PK `(team_id, model_id)`; `state` creating, active or retiring (`retire_after` set exactly when retiring); ARN checked by pattern. `afs_app` and `afs_gateway` read; the reconciler writes. Rows are copied to `team_models.inference_profile_arn` until 2.0.0 |
+
+Changed tables:
+
+| Table | Change |
+|---|---|
+| `agents` | `role` is `worker` or `orchestration` (rows renamed, versions untouched). Unique index `agents_team_orchestration_uq`; `afs_app` cannot insert an orchestration agent (`agents_role_reserved`) or the name `orchestrator` (`agents_name_reserved`); a live team cannot lose its orchestration agent (`agents_orchestration_required`). `model_access` (`all`/`selected`) and `default_model_id`; `model_id` follows `default_model_id` until 2.0.0. The composite FK to `team_models` is gone: team access is checked by trigger and `teams.model_access` |
+| `agent_pools` | `model_access`, `default_model_id`, plus `agent_pools_model_id_fkey` to `models`; the name `orchestrator` is reserved (`agent_pools_name_reserved`) |
+| `teams` | `orchestration_required` (a deferred check: a live team has an orchestration agent; `teams_orchestration_required`), `max_collaboration_exposure` (`off`/`private`/`public`, service admins only; `may_expose_collaboration` follows it until 2.0.0), `model_access` (`all`/`selected`; existing teams `selected`, new teams `all`) |
+| `team_collaboration` | `tool` (`paperclip`/`buzz`), `web_ui_exposure` and `web_api_exposure` (`off`/`private`/`public`); `web_ui_enabled` and `rest_api_enabled` follow them until 2.0.0 (a boolean set to true becomes the team limit). A level is checked against the team limit when new or changed (`team_collaboration_exposure_limit`) and against the tool's profile (`team_collaboration_surface_supported`, `team_collaboration_registration_supported`; Buzz has no Web UI or Web API and registers managed only). At commit the orchestration agent's template carries the tool's capability (`team_collaboration_tool_template`). `afs_app` updates the three choices and `tool`, but the row is created only by `create_orchestration_agent` |
+| `agent_templates` | `capabilities` is `{}`, `{orchestration,tool:paperclip}` or `{orchestration,tool:buzz}`; the legacy `paperclip` is rewritten. A template used by a live orchestration agent keeps its tool capability (`55000`) |
+| `agent_volume_snapshots` | Reason `pre_tool_change`, `tool` and `retain_until` (required for that reason); `afs_app` may insert `manual` and `pre_tool_change` |
+| `collaboration_access` | `exposure` (`public`/`private`) is part of the primary key; the rebuild takes an ACCESS EXCLUSIVE lock for the length of the table scan |
+| `models` | `origin` (`manual`/`bedrock_sync`), `synced_at`; `enabled` cannot be changed by `afs_app` while `models.service_access` is `all` (`models_enabled_fixed`) |
+| `secrets` | `managed_by` also `buzz` (registered secrets of Buzz, path `afs/<ns>/<agent>/buzz/...`) |
+| `service_settings` | `orchestration.*` (tools, public and private base domain, public and private endpoint switches, default limit, default Web UI and Web API exposure, default resources, default volume) and `models.*` (service access, default team access, default team models, default model) with value checks; `collab.base_domain` and `collab.public_endpoints` stay as read-only aliases for `afs_app` until 2.0.0. `afs_gateway` reads `(key, value)`. The change feed fires for `models.*` and `orchestration.*` keys |
+
+View: `effective_agent_models` (security invoker) lists, per live agent and pool, every model that passes the service, the team and the agent or pool level and has a price in force, with `is_default`.
+
 ## Functions
 
 | Function | Used by | Purpose |
@@ -209,7 +242,12 @@ Changes to existing tables:
 | `afs.remove_collab_agent_key(team_id, agent_id) → boolean` | reconciler (000020) | Removes that secret row after the reconciler deleted the secret. Audit only |
 | `afs.record_collab_board_key(team_id, collab_agent_id, secret_arn) → text` | reconciler (000020) | Records Paperclip's board key as a `managed_by = 'paperclip'` registered secret of the collaboration agent; never bound |
 | `afs.ensure_collaboration_access_partition(month) → text` | reconciler (000020) | Creates the monthly partition of `collaboration_access`; `drop_partitions_older_than(months)` now also drops its expired months |
-| `afs.collab_routes()` | `afs_edge` (000020; 000021 adds the two client ids) | One row per team with a live collaboration agent: hostname `<slug>.<collab.base_domain>`, team and agent state, stored and effective web UI and REST API flags (stored choice AND `may_expose_collaboration` AND `collab.public_endpoints` AND base domain; the web UI also needs a provider client), `ready` and `not_ready_reason` (`starting`, `paused`, `team_suspended`), service name and port, and the team's identity provider (issuer, groups claim, collab client id and secret ARN, and from 000021 `provider_client_id` = `identity_providers.client_id` and `provider_cli_client_id` = `cli_client_id`, null when unset, so the edge can accept REST bearer tokens minted for the console or CLI client as audience; public OIDC client ids, not secrets). Deleting and deleted teams are omitted |
+| `afs.create_orchestration_agent(team_id, agent_id, name, tool, web_ui_exposure, web_api_exposure, registration_mode, model_access, model_ids[], default_model_id, resources, storage_size_gib, storage_on_delete) → text` | `afs_app`, service admins only (`42501` otherwise; 000022) | Creates a team's orchestration agent in the caller's transaction: the agent from the tool's template and image repository in `orchestration.tools`, its `team_collaboration` row, `agent_models` rows, audit `CreateOrchestrationAgent` and outbox `agent.created` and `orchestration.created`. Null arguments take the service settings; the default levels are capped by the team limit and the tool. Errors: tool not enabled `23514` (`orchestration_tool_not_enabled`), runtime not set up `55000` (`orchestration_runtime_unset`), no default model `23514`, second orchestration agent `23505`, bad id `22023` |
+| `afs.orchestration_routes()` | `afs_edge` (000022) | Two rows (`web_ui`, `web_api`) per live team: tool, service name and port, stored `exposure`, team `limit_exposure`, `effective` level, `reasons` (`tool_not_supported`, `team_limit`, `service_switch_public`, `service_switch_private`, `base_domain_unset`, `provider_without_collab_client`), public and private hostnames, `hostname`, readiness and the identity provider columns of `collab_routes` |
+| `afs.orchestration_settings()` | `afs_edge` (000022) | The four edge keys: public and private base domain and endpoint switches |
+| `afs.model_admission(subject_kind, subject_id) → table(model_id, reason)` | `afs_app`, reconciler, gateway, readonly (000022) | For one agent or pool, the first failing level per model, in the order `model_not_enabled_for_service`, `model_not_enabled_for_team`, `model_not_enabled_for_agent`, `model_not_priced`; null reason when callable |
+| `afs.model_enabled_for_service(model)`, `afs.model_allowed_for_team(team, model)` | `afs_app`, reconciler, gateway, readonly (000022) | The two checks the triggers use |
+| `afs.collab_routes()` | `afs_edge` (000020; 000021 adds the two client ids; recomputed from `orchestration_routes()` in 000022, deprecated until 2.0.0) | One row per team with a live collaboration agent: hostname `<slug>.<collab.base_domain>`, team and agent state, stored and effective web UI and REST API flags (stored choice AND `may_expose_collaboration` AND `collab.public_endpoints` AND base domain; the web UI also needs a provider client), `ready` and `not_ready_reason` (`starting`, `paused`, `team_suspended`), service name and port, and the team's identity provider (issuer, groups claim, collab client id and secret ARN, and from 000021 `provider_client_id` = `identity_providers.client_id` and `provider_cli_client_id` = `cli_client_id`, null when unset, so the edge can accept REST bearer tokens minted for the console or CLI client as audience; public OIDC client ids, not secrets). Deleting and deleted teams are omitted |
 | `afs.collab_settings()` | `afs_edge` (000020) | The `collab.*` settings only |
 | `afs.collab_principal(team_id, subject, provider_id, groups[]) → table` | `afs_edge` (000020) | The caller's bindings for the team (no rows for a deleting or deleted team): the user's (matched by issuer and subject, not disabled) and the groups'. A team's group bindings match when the provider is the team's (else the default); a service-level group binding matches its named provider. Returns `service_admin` and the team's three roles, never `security_operator`; at most 500 groups |
 | `afs.collab_principal_key(team_id, key_sha256) → table` | `afs_edge` (000020) | State of a team's API key (`active`, `expired`, `revoked`; nothing for a deleting or deleted team); updates `last_used_at` at most once a minute; no hash in the result |
@@ -226,10 +264,10 @@ Changes to existing tables:
 | `afs_owner` | migrations | Owns schema |
 | `afs_app` | afs-api | Desired state read/write, audit and outbox insert; **row-level security applies**, calls `authenticate_api_key`, `resolve_workload` and `team_directory` (000016); including (000013, 000014) the service-admin write policies on `agent_templates`, `service_settings`, `models`, `model_prices`, `storage_classes`, `team_models`, `role_bindings` and `users` |
 | `afs_reconciler` | afs-reconciler | Read all (except `idempotency_keys` response columns); write status, lifecycle columns, inference profile ARNs, outbox publication; (000013) clear the ceiling override, lower `budgets.amount_usd`, run `ensure_spend_counter`, `release_expired_reservations`, the partition functions and `drop_partitions_older_than`; read `spend_reservations`; (000014) update the outcome columns of `export_bundles`; (000016) update `agent_pools.state` and `deleted_at`, and create remediation teams through `instantiate_work_order_team`; (000019) record a work order's template secrets through `record_work_order_secret`; (000020) update the reconciler columns of `agent_collaboration`, write `managed_by = 'paperclip'` secrets, run the three key functions, `ensure_collaboration_access_partition` and `purge_collab_edge_sessions` |
-| `afs_gateway` | afs-gateway | Read budgets/models/prices; reserve and settle spend (counters, and from 000013 `ensure_spend_counter`, `reserve_spend_held`, `settle_reservation`); insert usage; (000016) `resolve_workload` |
+| `afs_gateway` | afs-gateway | Read budgets/models/prices; reserve and settle spend (counters, and from 000013 `ensure_spend_counter`, `reserve_spend_held`, `settle_reservation`); insert usage; (000016) `resolve_workload`; (000022) read `service_settings (key, value)`, `agent_models`, `pool_models`, `team_inference_profiles`, `effective_agent_models` and `model_admission` for model access |
 | `afs_billing` | afs-billing | Write daily costs and reconciliations; (000018) read `service_settings (key, value)` for `pricing.price_list_sync` and `team_models (team_id, model_id, inference_profile_arn)` for inference-profile attribution |
 | `afs_readonly` | reporting, support | Read all except API key hashes and audit payloads |
-| `afs_edge` | the collaboration edge (000020) | Login-less role created by `bootstrap/roles.sql` (run `afs-migrate bootstrap-roles` before applying 000020). **No privilege on any table, view or sequence.** `USAGE` on schema `afs`, `EXECUTE` on `collab_routes`, `collab_settings`, `collab_principal`, `collab_principal_key`, `record_collab_access`, `emit_collab_secret_detected`, `collab_handoff_create`, `collab_handoff_consume`, `collab_session_get`, `collab_session_revoke` and `schema_version`; may `LISTEN afs_desired_state`. Every function is `SECURITY DEFINER` and returns only its named columns |
+| `afs_edge` | the collaboration edge (000020) | Login-less role created by `bootstrap/roles.sql` (run `afs-migrate bootstrap-roles` before applying 000020). **No privilege on any table, view or sequence.** `USAGE` on schema `afs`, `EXECUTE` on `collab_routes`, `collab_settings`, `collab_principal`, `collab_principal_key`, `record_collab_access`, `emit_collab_secret_detected`, `collab_handoff_create`, `collab_handoff_consume`, `collab_session_get`, `collab_session_revoke` and `schema_version`; may `LISTEN afs_desired_state`. Every function is `SECURITY DEFINER` and returns only its named columns 000022 adds `EXECUTE` on `orchestration_routes` and `orchestration_settings`; the role still holds no table privilege. |
 
 `afs-api` sets, per transaction: `SET LOCAL afs.actor = '<principal>'`, `SET LOCAL afs.service_admin =
 'on'|'off'`, `SET LOCAL afs.team_ids = '<comma-separated team ids>'`, and for security operators
@@ -239,5 +277,7 @@ Change feed (000013): the reconciler `LISTEN`s on channel `afs_desired_state`; p
 `<table>:<team_id>:<id>`, sent at commit. A table without `team_id` (service-level, for example
 `agent_templates` from 000014) leaves the team part empty: `agent_templates::tpl_<ULID>`. `users` and `service_settings` have no revision trigger and send
 nothing.
+
+From 000022, `agent_models` and `pool_models` send `agent_models:<team_id>:` and `pool_models:<team_id>:` (composite keys, no id), `team_inference_profiles` sends `team_inference_profiles:<team_id>:`, and `service_settings` sends `service_settings::<key>` for `models.*` and `orchestration.*` keys.
 
 From 000020, `team_collaboration` and `agent_collaboration` send `team_collaboration:<team_id>:` and `agent_collaboration:<team_id>:` (they have no `id` column, so the id part is empty; the reconciler re-reads the team).

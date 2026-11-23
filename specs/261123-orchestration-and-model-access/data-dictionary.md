@@ -1,0 +1,11 @@
+# Data dictionary (000022)
+
+The full dictionary is `docs/data-model.md`, section "Team orchestration agent and model access (000022)". This file lists only what is new, by name.
+
+- **Tables:** `agent_models`, `pool_models`, `team_inference_profiles`.
+- **View:** `effective_agent_models` (security invoker).
+- **Columns:** `agents.model_access`, `agents.default_model_id`, `agent_pools.model_access`, `agent_pools.default_model_id`, `teams.orchestration_required`, `teams.max_collaboration_exposure`, `teams.model_access`, `team_collaboration.tool`, `team_collaboration.web_ui_exposure`, `team_collaboration.web_api_exposure`, `agent_volume_snapshots.tool`, `agent_volume_snapshots.retain_until`, `collaboration_access.exposure`, `models.origin`, `models.synced_at`.
+- **Values:** `agents.role` is `worker` or `orchestration`; snapshot reason `pre_tool_change`; `secrets.managed_by` adds `buzz`; template capabilities `orchestration`, `tool:paperclip`, `tool:buzz`.
+- **Functions:** `create_orchestration_agent`, `orchestration_routes`, `orchestration_settings`, `model_admission`, `model_enabled_for_service`, `model_allowed_for_team`; replaced: `collab_routes`, `record_collab_access`, `instantiate_work_order_team`, `record_work_order_secret`, `record_collab_agent_key`, `remove_collab_agent_key`, `record_revision`.
+- **Settings:** `orchestration.*` (10 keys) and `models.*` (4 keys); `collab.base_domain` and `collab.public_endpoints` are aliases.
+- **Constraint names `-restapi` maps to API errors:** `agents_team_orchestration_uq`, `teams_orchestration_required`, `agents_orchestration_required`, `agents_role_reserved`, `agents_name_reserved`, `agent_pools_name_reserved`, `team_collaboration_exposure_limit`, `team_collaboration_surface_supported`, `team_collaboration_registration_supported`, `team_collaboration_tool_template`, `orchestration_tool_not_enabled`, `orchestration_runtime_unset`, `orchestration_tools_template`, `service_settings_orchestration_check`, `service_settings_models_check`, `service_settings_alias_read_only`, `agents_models_selection_nonempty`, `agents_default_model_allowed`, `agent_models_service`, `agent_models_team`, `agent_models_limit`, `pool_models_limit`, `models_enabled_fixed`, `secrets_buzz_prefix`, `secrets_buzz_scope`.
