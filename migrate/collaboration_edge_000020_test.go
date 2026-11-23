@@ -24,6 +24,7 @@ var edgeFunctions = []string{
 	"afs.emit_collab_secret_detected(text, text, text, text, text, text, integer)",
 	"afs.collab_handoff_create(bytea, text, text, text, text, text, text[])",
 	"afs.collab_handoff_consume(bytea, text, bytea)", "afs.collab_session_get(bytea)", "afs.collab_session_revoke(bytea)",
+	"afs.orchestration_routes()", "afs.orchestration_settings()", // 000022
 }
 
 func sha(s string) []byte { h := sha256.Sum256([]byte(s)); return h[:] }
@@ -74,7 +75,7 @@ func edgeWorld(t *testing.T) *pgx.Conn {
 INSERT INTO afs.identity_providers (id, name, kind, issuer_url, client_id, is_default, collab_client_id, collab_client_secret_arn) VALUES
  ('`+idpP1+`', 'Okta', 'okta', 'https://idp.example.com', 'console', true, 'collab-web', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/idp/collab-AbCdEf');
 INSERT INTO afs.identity_providers (id, name, kind, issuer_url, client_id) VALUES ('`+idpP2+`', 'Entra', 'entra_id', 'https://login.example.com', 'console2');
-UPDATE afs.service_settings SET value = '"collab.example.com"' WHERE key = 'collab.base_domain'`)
+UPDATE afs.service_settings SET value = '"collab.example.com"' WHERE key = 'orchestration.public_base_domain'`)
 	return conn
 }
 
@@ -127,7 +128,7 @@ func TestEdgeRole(t *testing.T) {
 			executableBy(t, conn, fn, "afs_edge")
 		}
 		executableBy(t, conn, "afs.purge_collab_edge_sessions()", "afs_reconciler")
-		// exactly ten SECURITY DEFINER functions plus schema_version are callable by the edge
+		// exactly twelve SECURITY DEFINER functions plus schema_version are callable by the edge
 		rows, err := conn.Query(ctx, `SELECT p.oid::regprocedure::text FROM pg_proc p
 			 WHERE p.pronamespace = 'afs'::regnamespace AND p.prosecdef AND p.prorettype <> 'trigger'::regtype
 			   AND has_function_privilege('afs_edge', p.oid, 'EXECUTE')`)
@@ -196,11 +197,11 @@ func TestEdgeRoutes(t *testing.T) {
 		if len(got) != 2 || got[0] != want {
 			t.Fatalf("routes %v\nwant %s", got, want)
 		}
-		mustExec(t, conn, `UPDATE afs.service_settings SET value = 'null' WHERE key = 'collab.base_domain'`)
+		mustExec(t, conn, `UPDATE afs.service_settings SET value = 'null' WHERE key = 'orchestration.public_base_domain'`)
 		if got := routeCols(t, conn, `hostname IS NULL, web_ui_effective, rest_api_effective`); got[0] != "true|false|false" {
 			t.Fatalf("no base domain: %v", got)
 		}
-		mustExec(t, conn, `UPDATE afs.service_settings SET value = '"collab.example.com"' WHERE key = 'collab.base_domain'`)
+		mustExec(t, conn, `UPDATE afs.service_settings SET value = '"collab.example.com"' WHERE key = 'orchestration.public_base_domain'`)
 	})
 	t.Run("routes: each guard turns the effective flag off", func(t *testing.T) {
 		mustExec(t, conn, `UPDATE afs.team_collaboration SET rest_api_enabled = true WHERE team_id = $1`, teamA)
@@ -214,8 +215,8 @@ func TestEdgeRoutes(t *testing.T) {
 			{"web ui choice", `UPDATE afs.team_collaboration SET web_ui_enabled = false WHERE team_id = '` + teamA + `'`, `UPDATE afs.team_collaboration SET web_ui_enabled = true WHERE team_id = '` + teamA + `'`, "false|true|false|true"},
 			{"rest choice", `UPDATE afs.team_collaboration SET rest_api_enabled = false WHERE team_id = '` + teamA + `'`, `UPDATE afs.team_collaboration SET rest_api_enabled = true WHERE team_id = '` + teamA + `'`, "true|false|true|false"},
 			{"team guardrail", `UPDATE afs.teams SET may_expose_collaboration = false WHERE id = '` + teamA + `'`, `UPDATE afs.teams SET may_expose_collaboration = true WHERE id = '` + teamA + `'`, "false|false|true|true"},
-			{"public endpoints", `UPDATE afs.service_settings SET value = 'false' WHERE key = 'collab.public_endpoints'`, `UPDATE afs.service_settings SET value = 'true' WHERE key = 'collab.public_endpoints'`, "false|false|true|true"},
-			{"base domain", `UPDATE afs.service_settings SET value = 'null' WHERE key = 'collab.base_domain'`, `UPDATE afs.service_settings SET value = '"collab.example.com"' WHERE key = 'collab.base_domain'`, "false|false|true|true"},
+			{"public endpoints", `UPDATE afs.service_settings SET value = 'false' WHERE key = 'orchestration.public_endpoints'`, `UPDATE afs.service_settings SET value = 'true' WHERE key = 'orchestration.public_endpoints'`, "false|false|true|true"},
+			{"base domain", `UPDATE afs.service_settings SET value = 'null' WHERE key = 'orchestration.public_base_domain'`, `UPDATE afs.service_settings SET value = '"collab.example.com"' WHERE key = 'orchestration.public_base_domain'`, "false|false|true|true"},
 			{"provider client", `UPDATE afs.identity_providers SET collab_client_secret_arn = NULL, collab_client_id = NULL WHERE id = '` + idpP1 + `'`, `UPDATE afs.identity_providers SET collab_client_id = 'collab-web', collab_client_secret_arn = 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/idp/collab-AbCdEf' WHERE id = '` + idpP1 + `'`, "false|true|true|true"},
 		}
 		for _, c := range cases {

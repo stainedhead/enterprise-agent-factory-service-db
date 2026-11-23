@@ -54,13 +54,30 @@ Service admins change these through the API. Values are JSON and checked by the 
 | `work_orders.cost_center` | unset | string, 1–100 characters; cost center of a remediation team whose swarm template names none |
 | `work_orders.owner_email` | unset | string `local@domain`; owner of a remediation team whose swarm template names none |
 | `secrets.path_prefix` | `afs` | managed Secrets Manager path prefix |
-| `collab.base_domain` | null | null or a DNS name; team hostnames are `<slug>.<base domain>` (000020) |
-| `collab.public_endpoints` | true | boolean; master switch for the public collaboration endpoints |
+| `collab.base_domain` | null | Read-only alias of `orchestration.public_base_domain` until 2.0.0 (000020, 000022) |
+| `collab.public_endpoints` | true | Read-only alias of `orchestration.public_endpoints` until 2.0.0 |
 | `collab.allowed_source_cidrs` | `[]` | up to 100 CIDRs (no host bits) |
 | `collab.session_ttl_minutes` | 480 | 15–1440 |
 | `collab.content_scan` | `block` | `block`, `warn` or `off` |
 | `collab.max_body_mb` | 25 | 1–100 |
 | `collab.denied_spike_threshold` | 50 | 1–100000 |
+
+Orchestration and model access (000022). A service admin writes them through the API; the database checks every value.
+
+| Key | Default | Range |
+|---|---|---|
+| `orchestration.tools` | Paperclip enabled and default, Buzz disabled | object per tool: `enabled`, `default` (exactly one enabled default), `templateId` (an agent template with the `orchestration` and `tool:<tool>` capabilities), `imageRepository`, and the tool's fixed profile. A tool is unusable until its template and repository are set |
+| `orchestration.public_base_domain` | the old `collab.base_domain` (null on a new database) | null or a DNS name; public hostnames are `<slug>.<domain>` |
+| `orchestration.private_base_domain` | null | null or a DNS name reachable only from the private network |
+| `orchestration.public_endpoints`, `orchestration.private_endpoints` | true | boolean master switches |
+| `orchestration.default_limit` | `public` if a base domain was set, else `private` | `off`, `private`, `public`; the limit of a new team |
+| `orchestration.default_web_ui_exposure`, `orchestration.default_web_api_exposure` | the default limit, `off` | `off`, `private`, `public`; not above the default limit |
+| `orchestration.default_resources` | `{"cpu": "1", "memory": "4Gi"}` | object with string `cpu` and `memory` |
+| `orchestration.default_volume_gib` | 20 | whole number 10–1000 |
+| `models.service_access` | `all` on a new database; `selected` when models already exist | `all` or `selected` (only models with `enabled = true`) |
+| `models.default_team_access` | `all` | `all` or `selected` |
+| `models.default_team_models` | `[]` | up to 100 existing model ids |
+| `models.default_model_id` | null | null or an existing model id |
 
 The full list, with the remaining keys, is in [docs/data-model.md](../docs/data-model.md).
 

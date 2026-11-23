@@ -3,6 +3,22 @@
 All notable changes to this repository. Versions follow semver. `-db` and `-restapi` release in lockstep
 with the same version number.
 
+## v1.1.0 (2026-11-23)
+
+Schema migrations 000001–000022. Not yet tagged. Lockstep with `-restapi` 1.1.0. Spec `specs/261123-orchestration-and-model-access/`.
+
+- **000022 Team orchestration agent and model access** (database contract section 7.3, decisions CD-13 to CD-25):
+  - agent role `collaboration` becomes `orchestration`: exactly one live per team, created with the team, never removed while the team lives, the reserved name `orchestrator`
+  - tool choice Paperclip or Buzz (`team_collaboration.tool`, template capabilities `orchestration`, `tool:paperclip`, `tool:buzz`); a tool change takes a `pre_tool_change` volume snapshot kept 90 days
+  - exposure levels `off`, `private`, `public` for the Web UI and the Web API, within a team limit (`teams.max_collaboration_exposure`) that only service admins set
+  - `afs.orchestration_routes()` and `afs.orchestration_settings()` for `afs-edge`; `collab_routes()` recomputed; access counts carry the exposure
+  - `afs.create_orchestration_agent` and an updated `afs.instantiate_work_order_team`
+  - model access: `all` or `selected` for teams, agents and pools (`agent_models`, `pool_models`), `default_model_id`, `team_inference_profiles`, the view `effective_agent_models` and `afs.model_admission`
+  - the `orchestration.*` and `models.*` service settings; `collab.base_domain` and `collab.public_endpoints` become read-only aliases
+  - Buzz keeps its keys under reserved secret names, like Paperclip
+- **Compatibility until 2.0.0:** the 1.0.1 columns and functions stay in step (`web_ui_enabled`, `rest_api_enabled`, `may_expose_collaboration`, `agents.model_id`, `team_models.inference_profile_arn`, `collab_routes`, `collab_settings`).
+- **Upgrade:** rebuilding the primary key of `collaboration_access` takes an `ACCESS EXCLUSIVE` lock on it; run in a quiet period. See `user-docs/operations.md`.
+
 ## v1.0.1 (2026-11-22)
 
 First tagged release. Schema migrations 000001–000021.

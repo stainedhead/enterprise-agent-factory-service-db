@@ -35,6 +35,29 @@ SELECT afs.drop_partitions_older_than(13);   -- returns the names of the dropped
 
 Migrations are forward-only in production. Fix a problem with a new migration, not with `down`.
 
+### Upgrading to 1.1.0 (migration 000022)
+
+Release 1.1.0 embeds migration 000022 (team orchestration agent and model access). `-restapi` 1.1.0 applies it at startup;
+run `afs-migrate up` first if you prefer to apply it yourself.
+
+- **Upgrade window.** Run it when the edge sees little traffic. The one blocking step is rebuilding the primary key of
+  `afs.collaboration_access` (it gains the `exposure` column), which holds an `ACCESS EXCLUSIVE` lock on that table
+  for the length of a scan of at most weeks of request counts. While it runs, `afs-edge` cannot record counts (it
+  retries) and nothing else is blocked. Every other statement takes row locks or brief metadata locks.
+- **No new role.** 000022 needs no `bootstrap-roles` run; the `afs_edge` role from 000020 is enough.
+- **Version skew.** 1.0.1 services keep working against the 000022 schema: the old columns (`web_ui_enabled`,
+  `rest_api_enabled`, `may_expose_collaboration`, `agents.model_id`, `team_models.inference_profile_arn`) and the
+  functions `collab_routes()` and `collab_settings()` stay in step until 2.0.0. A 1.0.1 `-restapi` cannot create a
+  team's orchestration agent or an orchestration-tool change; roll `-restapi` forward to 1.1.0 soon after.
+- **Existing data.** Agents with role `collaboration` become `orchestration` (versions unchanged). Existing teams get
+  model access `selected` (their `team_models` rows stay the rule) and a limit of `public` or `off` from
+  `may_expose_collaboration`. Existing teams are not required to have an orchestration agent; new ones are.
+- **After the upgrade.** Set `orchestration.tools` (the Paperclip template and image repository are filled in when
+  exactly one template had the `paperclip` capability; Buzz needs both set by hand) and, for private endpoints,
+  `orchestration.private_base_domain`.
+- **Down.** `afs-migrate down 1` is for local use. It renames the role back and drops the new tables; Buzz rows,
+  model selections and inference-profile rows made under 1.1.0 are lost.
+
 ## Backups and restore
 
 Backups are RDS automated backups with point-in-time recovery, Multi-AZ, and a cross-account snapshot

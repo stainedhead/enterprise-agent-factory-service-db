@@ -96,3 +96,19 @@ Decisions local to this repository. Cross-repo decisions live in the root reposi
   guard (`record_work_order_secret`, the key functions) run as the owner and pass. Trigger order matters:
   `secrets_managed_guard` fires before `secrets_managed_path` because PostgreSQL orders triggers by name.
 - Consequences: a test asserts the order; a new guard of this kind must be written the same way.
+
+## ADR-011 The orchestration agent, exposure levels and model access live in the schema, with 1.0.1 columns kept in step
+
+- Context: 1.1.0 makes the collaboration agent a required, per-team orchestration agent with a choice of tool, replaces two
+  booleans with levels under a team limit, and lets agents narrow models. 1.0.1 services stay in production while
+  `-restapi` rolls forward, and the schema may not break them.
+- Decision: rules live in constraints and triggers, not in the API alone. A required child (one orchestration agent per
+  team) is a deferred constraint trigger, checked at commit, so the team and its agent are created in one transaction.
+  Per-surface levels, the team limit and the tool's profile are checked in a `BEFORE` trigger on the changed columns only,
+  so an unrelated update does not fail because a limit was lowered later. The 1.0.1 columns (`web_ui_enabled`,
+  `rest_api_enabled`, `may_expose_collaboration`, `agents.model_id`) are kept in step by triggers and removed in 2.0.0.
+  Guards that depend on `current_user` are `SECURITY INVOKER` and separate from the `SECURITY DEFINER` guards that read
+  other tables (ADR-010); trigger names that must run first sort first (`team_collaboration_a_levels_sync`).
+- Consequences: the down migration is lossy for data that 1.0.1 cannot hold (Buzz rows, model selections, inference
+  profile rows) and says so in its header; foreign keys to `team_models` are re-added and validated only when the data
+  allows it.

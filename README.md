@@ -40,6 +40,29 @@ Design rules that every migration follows:
 - **Money is `numeric` USD**; enumerations are `text` + `CHECK`; ids are prefixed ULIDs (`team_…`, `agt_…`).
 - **Desired-state tables** carry `version` (for `If-Match`), `generation`, timestamps and a revision trigger.
 
+## Team orchestration agent and model access (1.1.0)
+
+Migration 000022 gives every team one **orchestration agent** and lets agents choose their models.
+
+```mermaid
+flowchart LR
+  T[team created] --> O[orchestration agent<br/>role orchestration, name orchestrator]
+  O --> P[tool: Paperclip or Buzz<br/>team_collaboration.tool]
+  P --> E{exposure per surface<br/>off / private / public}
+  L[team limit<br/>max_collaboration_exposure] -. caps .-> E
+  E --> R[orchestration_routes<br/>read by afs_edge]
+  S[service models<br/>models.service_access] --> TM[team models<br/>teams.model_access]
+  TM --> A[agent or pool models<br/>all, one or several]
+  A --> V[effective_agent_models<br/>and model_admission]
+```
+
+- **One orchestration agent per team**, created with the team (`afs.create_orchestration_agent`, or by a work order
+  team). It cannot be added or removed through the API; the tool is Paperclip, or Buzz which has no Web UI or Web API.
+- **Exposure levels** `off`, `private` or `public` for the Web UI and the Web API, never above the team's limit, which only
+  a service admin sets. `afs.orchestration_routes()` returns the effective level and the reasons it is lower than stored.
+- **Model access** is all, one or several models, narrowed in three steps (service, team, agent or pool); a model also
+  needs a price in force. Defaults are open. `afs.model_admission` says why a model is refused.
+
 ## Roles and row-level security
 
 ![Roles and row-level security](docs/images/db-roles-rls.svg)
@@ -78,9 +101,9 @@ make cover      # migrate coverage (set AFS_TEST_DATABASE_URL for the integratio
 
 ## Status
 
-Feature complete at schema `000021`: migrations `000001_core_schema` to `000021_collab_routes_provider_clients`, with
+Feature complete at schema `000022`: migrations `000001_core_schema` to `000022_orchestration_and_model_access`, with
 integration tests that prove every acceptance criterion of the [PRD](enterprise-agent-factory-service-db-PRD.md)
-this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. 000021 adds the identity provider's console and CLI client ids to `collab_routes()` so the edge accepts REST bearer tokens from CLI and console sign-in. The release is `v1.0.1` (see `CHANGELOG.md`); `-db` and `-restapi` share version numbers.
+this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. 000021 adds the identity provider's console and CLI client ids to `collab_routes()` so the edge accepts REST bearer tokens from CLI and console sign-in. 000022 (release 1.1.0) turns the collaboration agent into the team's orchestration agent (Paperclip or Buzz), adds private and public exposure levels with a team limit, and lets agents and pools use all, one or several models. Operators read the [upgrade notes](user-docs/operations.md#upgrading-to-110-migration-000022) first. The last tagged release is `v1.0.1` (see `CHANGELOG.md`); `-db` and `-restapi` share version numbers; `-db` and `-restapi` share version numbers.
 
 ## Contributing
 
