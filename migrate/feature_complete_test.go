@@ -123,6 +123,42 @@ INSERT INTO afs.team_model_endpoints (team_id, endpoint_id) VALUES
  ('`+teamB+`', 'mep_00000000000000000000000002'), ('`+swarmB+`', 'mep_00000000000000000000000002');
 INSERT INTO afs.agent_model_endpoints (team_id, agent_id, endpoint_id) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX');
 INSERT INTO afs.pool_model_endpoints (team_id, pool_id, endpoint_id) VALUES ('`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', 'mep_00000000000000000000000002');
+-- MCP servers (000024): an enterprise server both teams switched on, team B's own remote and hosted servers, their
+-- inventory, selections, policy, credential, review, OAuth state, federation state, federated identities and ledger.
+UPDATE afs.teams SET gateway_deployment = 'per_namespace', may_add_mcp_servers = true WHERE id IN ('`+teamB+`', '`+swarmB+`');
+UPDATE afs.service_settings SET value = '["https://vault.example.com", "sts.example.*"]' WHERE key = 'federation.allowed_audiences';
+INSERT INTO afs.mcp_servers (id, team_id, slug, display_name, data_classification, transport, location, url, auth_kind, review_status, published) VALUES
+ ('`+mcpEntB+`', NULL, 'tickets', 'Tickets', 'internal', 'streamable_http', 'corporate', 'https://mcp.tickets.example.com/mcp', 'none', 'approved', true),
+ ('`+mcpTeamB+`', '`+teamB+`', 'search-docs', 'Search docs', 'internal', 'streamable_http', 'external', 'https://docs.example.com/mcp', 'static', 'approved', false);
+INSERT INTO afs.mcp_servers (id, team_id, slug, display_name, data_classification, transport, location, auth_kind) VALUES
+ ('mcp_01JD3Z5Y8K2M4N6P8Q0R2S4TC3', '`+teamB+`', 'search-local', 'Search local', 'internal', 'hosted', 'in_namespace', 'none');
+INSERT INTO afs.mcp_hosted_specs (server_id, image) VALUES
+ ('mcp_01JD3Z5Y8K2M4N6P8Q0R2S4TC3', 'ghcr.io/x/mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+INSERT INTO afs.mcp_primitives (id, server_id, kind, name, definition, digest, status) VALUES
+ ('mpr_01JD3Z5Y8K2M4N6P8Q0R2S4TC4', '`+mcpTeamB+`', 'tool', 'search', '{"name":"search"}', 'sha256:'||repeat('b', 64), 'approved'),
+ ('mpr_01JD3Z5Y8K2M4N6P8Q0R2S4TC5', '`+mcpEntB+`', 'tool', 'create_ticket', '{"name":"create_ticket"}', 'sha256:'||repeat('c', 64), 'approved');
+INSERT INTO afs.team_mcp_servers (team_id, server_id, enabled) VALUES
+ ('`+teamB+`', '`+mcpEntB+`', true), ('`+teamB+`', '`+mcpTeamB+`', true), ('`+swarmB+`', '`+mcpEntB+`', true);
+UPDATE afs.agents SET mcp_access = 'selected' WHERE id = '`+agentB+`';
+INSERT INTO afs.agent_mcp_servers (team_id, agent_id, server_id) VALUES ('`+teamB+`', '`+agentB+`', '`+mcpTeamB+`');
+INSERT INTO afs.pool_mcp_servers (team_id, pool_id, server_id) VALUES ('`+swarmB+`', '`+poolScanB+`', '`+mcpEntB+`');
+INSERT INTO afs.mcp_policies (id, level, team_id, server_id, name, effect) VALUES
+ ('mpol_01JD3Z5Y8K2M4N6P8Q0R2S4TC6', 'team', '`+teamB+`', '`+mcpEntB+`', 'delete_*', 'block');
+INSERT INTO afs.mcp_credentials (id, server_id, scope, team_id, kind, secret_arn, status) VALUES
+ ('mcr_01JD3Z5Y8K2M4N6P8Q0R2S4TC7', '`+mcpTeamB+`', '`+teamB+`', '`+teamB+`', 'static',
+  'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-search/_gateway/mcp/search-docs-AbCdEf', 'set');
+INSERT INTO afs.mcp_reviews (id, server_id, approver, decision, note) VALUES
+ ('mrv_01JD3Z5Y8K2M4N6P8Q0R2S4TC8', '`+mcpTeamB+`', 'team_admin', 'approved', 'Docs search only');
+INSERT INTO afs.mcp_oauth_states (state_hash, team_id, server_id, code_verifier_arn, expires_at) VALUES
+ (decode(repeat('03',32),'hex'), '`+teamB+`', '`+mcpTeamB+`', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-search/_gateway/mcp/oauth-x-AbCdEf', now() + interval '5 minutes');
+INSERT INTO afs.mcp_federation_states (server_id, team_id) VALUES ('`+mcpTeamB+`', '`+teamB+`');
+INSERT INTO afs.agent_federated_identities (team_id, agent_id, name, id, audience) VALUES
+ ('`+teamB+`', '`+agentB+`', 'vault', 'afi_01JD3Z5Y8K2M4N6P8Q0R2S4TC9', 'https://vault.example.com');
+INSERT INTO afs.pool_federated_identities (team_id, pool_id, name, id, audience) VALUES
+ ('`+swarmB+`', '`+poolScanB+`', 'sts', 'pfi_01JD3Z5Y8K2M4N6P8Q0R2S4TCA', 'sts.example.com');
+INSERT INTO afs.mcp_events (at, request_id, team_id, agent_id, server_id, server_kind, method, name, outcome) VALUES
+ (now(), 'req-mcp-b1', '`+teamB+`', '`+agentB+`', '`+mcpTeamB+`', 'team', 'tools/call', 'search', 'ok');
+SELECT afs.rollup_mcp_usage(current_date);
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +287,8 @@ const (
 	poolScanB = "pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH"
 	poolFixB  = "pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBJ"
 	workOrdB  = "wo_01JD3Z5Y8K2M4N6P8Q0R2S4TBQ"
+	mcpEntB   = "mcp_01JD3Z5Y8K2M4N6P8Q0R2S4TC1" // enterprise, published, switched on for team B and swarm B
+	mcpTeamB  = "mcp_01JD3Z5Y8K2M4N6P8Q0R2S4TC2" // team B's own approved server
 )
 
 // asApp runs sql as afs_app with the given session settings, in a transaction that commits.

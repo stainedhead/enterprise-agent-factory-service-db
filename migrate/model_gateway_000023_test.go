@@ -107,8 +107,8 @@ func TestGatewaySeeds(t *testing.T) {
 	if got := scalar[bool](t, conn, "", `SELECT requires_terms FROM afs.model_endpoints WHERE slug = 'openrouter'`); !got {
 		t.Error("openrouter has extra terms")
 	}
-	if got := scalar[string](t, conn, "", `SELECT afs.schema_version()::text`); got != "23" {
-		t.Errorf("schema version %s", got)
+	if got := scalar[int](t, conn, "", `SELECT afs.schema_version()`); got < gatewayVersion {
+		t.Errorf("schema version %d", got)
 	}
 	t.Run("provider_for_host", func(t *testing.T) {
 		for host, want := range map[string]string{
@@ -1120,6 +1120,10 @@ func TestMigration000023(t *testing.T) {
 		mustExec(t, conn, `INSERT INTO afs.team_model_endpoints (team_id, endpoint_id) VALUES ($1, $2)`, team1, epOpenAI)
 		wantOK(t, addAgent(t, conn, cid("agt", 90), team1, "routed", "worker", nil, "team_shared"))
 		mustExec(t, conn, `UPDATE afs.agents SET default_route = 'openai-prod', default_model_id = 'gpt-x' WHERE id = $1`, cid("agt", 90))
+		later := len(migs) - gatewayVersion // the migrations above 000023
+		if n, err := migrate.Down(t.Context(), conn, migs, later); err != nil || n != later {
+			t.Fatalf("down to 000023: n=%d err=%v", n, err)
+		}
 		if _, err := migrate.Down(t.Context(), conn, migs, 1); sqlState(err) != "55000" {
 			t.Fatalf("down with a route default: %v", err)
 		}
@@ -1130,7 +1134,7 @@ func TestMigration000023(t *testing.T) {
 		if got := scalar[string](t, conn, "", `SELECT model_id FROM afs.usage_events WHERE request_id = 'r3'`); got != "openai-prod/gpt-x" {
 			t.Errorf("route usage after down: %s", got)
 		}
-		if n, err := migrate.Up(t.Context(), conn, migs); err != nil || n != 1 {
+		if n, err := migrate.Up(t.Context(), conn, migs); err != nil || n != later+1 {
 			t.Fatalf("up again: n=%d err=%v", n, err)
 		}
 	})

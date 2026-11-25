@@ -1,6 +1,6 @@
 # Data model
 
-Schema `afs`, PostgreSQL 17. Current version: migration 000023. Source: `migrations/`. Keep this file in step with every migration.
+Schema `afs`, PostgreSQL 17. Current version: migration 000024. Source: `migrations/`. Keep this file in step with every migration.
 
 ## Entity overview
 
@@ -242,6 +242,40 @@ The Bedrock-off guard (`no_fallback_model`, `23514`): turning `bedrock` off need
 
 View: `effective_agent_routes` (security invoker) lists, per live agent and pool, every route model it may call now (`subject_kind`, `subject_id`, `team_id`, `endpoint_id`, `slug`, `model_name`, `is_default`).
 
+### Governed MCP servers (000024)
+
+Spec: `specs/261125-mcp-gateway/`; contract: root `docs/contracts/database-contract.md` section 7.5 (decisions CD-50 to CD-52); PRD: root `mcp-gateway-PRD.md` sections 7, 8, 11 and Appendix C and E.2. Agents reach MCP servers only through their team gateway (`/mcp`, `/mcp/<slug>`). Servers are reviewed, their tools, resources and prompts are pinned by digest, and access is service ∩ team ∩ agent. `afs.mcp_admission` is the one decision the API, the reconciler and the gateway share (CD-51).
+
+New tables:
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `mcp_servers` | Enterprise servers (`team_id` NULL, service admins) and team servers (`team_id` set, team-admins of a team with `may_add_mcp_servers`) | Id `mcp_`. `slug` `^[a-z][a-z0-9-]{1,30}$`, no `--`, no trailing `-`, not `afs`; unique among enterprise rows, per team, and never shared between a team and the enterprise catalog (`mcp_servers_slug_taken`, `23505`). `transport` `streamable_http` or `hosted`; `location` `external`, `corporate`, `in_namespace`; a remote server has an `https://` URL and a hosted one none and runs in the namespace (`mcp_servers_url`). `auth_kind` `none`, `static`, `oauth_client`, `workload_federation` (needs `federation` issuer, audience and token endpoint, `mcp_servers_federation`), `oauth_user`, `aws_sigv4`. `review_status` `draft` → `pending_review` → `approved`/`rejected`/`draft`, `rejected` → `draft`, `approved` → `pending_review`, any → `suspended` and back to `suspended_from` (`mcp_review_transition`); publishing needs `approved` (`mcp_servers_publish`); `published` and `default_for_new_teams` are enterprise only (`mcp_servers_enterprise_only`) and a default must be published. `risk_tier`, `risk_reasons`, `checks` (findings, never the offending text in full), `drift_policy` `hold` or `auto_approve_compatible`, `allow_sampling`, `trust_annotations`, `args_hashing`, `limits`. A change of URL, location, auth or transport bumps `generation`. The gateway writes `refresh_requested_at` and `protocol_version` without a new version |
+| `mcp_hosted_specs` | How the reconciler runs a hosted server | PK `server_id`; `team_id` copied; `image` pinned `…@sha256:<64 hex>` (`mcp_hosted_specs_image`); `env_names` names only (`mcp_hosted_specs_env_names`); `instance_mode` `per_team`/`per_agent`; `egress_hosts`; `needs_aws`; the reconciler writes `signature_verified_at` only |
+| `mcp_primitives` | The inventory: tools, resources, resource templates and prompts | Id `mpr_`; `team_id` copied; unique `(server_id, kind, name)`; `definition` (the approved one, metadata only), `digest`/`approved_digest` `sha256:<64 hex>`, `pending_definition` and `change` (`new`, `compatible`, `incompatible`) for a held change. `status` `pending_review` → `approved`/`blocked`, `approved` → `pending_review` only with a new digest, `blocked` → `approved` (`mcp_primitive_transition`); approval adopts the held definition and pins its digest. The gateway inserts as `pending_review` and can approve only a compatible change of a server with `auto_approve_compatible` (`mcp_gateway_cannot_approve`, `42501`, CD-52), which leaves an `auto_approved` review. At most 2,000 live per server (`mcp_primitives_limit`) |
+| `team_mcp_servers` | A team's switch per server | PK `(team_id, server_id)`; `enabled`, `mode` `full`/`read_only`. The server is a published enterprise server or the team's own (`team_mcp_servers_scope`); switching on needs `teams.gateway_deployment = 'per_namespace'` (`team_gateway_required`, CD-44). A new team with its own gateway, or a team that moves to one, gets every published, approved `default_for_new_teams` server switched on (outbox `team_mcp_server.enabled`) |
+| `agent_mcp_servers`, `pool_mcp_servers` | The servers an agent or pool with `mcp_access = 'selected'` may use | PK `(team_id, agent_id|pool_id, server_id)`; composite FK (cascade); the server must be switched on for the team (`agent_mcp_servers_team`) |
+| `mcp_policies` | Allow and block rules | Id `mpol_`; `level` `service`, `team`, `agent`, `pool` with matching scope columns (`mcp_policies_scope`); exactly one of `name` (exact, or a glob where `*` matches any run) and `class` `read_only`/`destructive`/`open_world` (`mcp_policies_selector`); `effect`; `rate_limit_per_minute`. At most 500 per server per scope (`mcp_policies_limit`) |
+| `mcp_credentials` | Secrets Manager reference of an upstream credential, never a value | Id `mcr_`; unique `(server_id, scope)`; `scope` `_shared` (`team_id` NULL) or the team id (`mcp_credentials_scope_team`); the ARN names `<prefix>/<namespace>/_gateway/mcp/<slug>` or `<prefix>/_service/gateway/mcp/<slug>` (`mcp_credential_path`; a team server's credential is its team's); `kind` `static`, `oauth_client`, `oauth_user` (names its `subject`, `mcp_credentials_subject`); `status` `set`, `missing`, `expired`. The gateway writes `status` and `expires_at` only, without a new version |
+| `mcp_oauth_states` | Single-use OAuth authorization state | PK `state_hash` (SHA-256 of the state, 32 bytes); `code_verifier_arn` (ARN only); at most 10 minutes (`mcp_oauth_states_ttl`). `afs_app` may insert but not read; the callback claims a state once through `afs.claim_mcp_oauth_state` |
+| `mcp_reviews` | Review decisions, append-only | Id `mrv_`; no foreign keys, so the history outlives the server; `team_id` copied; `approver` `team_admin`/`security`; `decision` `approved`, `rejected`, `changes_requested`, `blocked`, `auto_approved`; `note` required except for `auto_approved` (`mcp_reviews_note`). UPDATE, DELETE and TRUNCATE are refused (`42501`) |
+| `mcp_federation_states` | Workload federation readiness per server and team | PK `(server_id, team_id)`; `afs_app` writes `test_requested_at`, the gateway `status`, `last_error`, `checked_at` |
+| `mcp_query_captures` | Windows in which `afs_search` query text is recorded | Id `mqc_`; `reason` required; at most `mcp.query_capture_max_days` (`mcp_query_captures_window`); one open window (`capture_active`, `23505`); an expired window is closed when the next starts. No team column; written by service admins through the API |
+| `agent_federated_identities`, `pool_federated_identities` | Projected OIDC tokens an agent's own tools exchange for temporary credentials (PRD Appendix C) | PK `(team_id, agent_id|pool_id, name)`; id `afi_`/`pfi_`; `audience` matched against `federation.allowed_audiences` (`audience_not_allowed`), never `sts.amazonaws.com` or `afs-gateway` (`audience_reserved`); `file_path` under `/var/run/secrets/afs/federation/` and `env_var` default from the name; `expiration_seconds` 600–86400; at most 10 per subject (`federated_identity_limit`) |
+| `mcp_events` | The call ledger, append-only | Partitioned by day (`mcp_events_YYYYMMDD`, plus a default); metadata only: request id, team, agent or pool, server, method, name, primitive, digest, outcome (`ok`, `tool_error`, `protocol_error`, `refused`, `upstream_unavailable`, `timeout`, `cancelled`), reason, codes, timings, sizes, protocol versions, `args_sha256`, search results. `query_text` is kept only while a capture window is open, otherwise the insert trigger clears it (CD-50). A per-namespace gateway inserts for its own teams only |
+| `mcp_usage_daily` | Daily rollup | PK `(day, team_id, agent_or_pool, server_id, method, name, outcome)`; calls, errors, p50 and p95 latency, bytes in and out; `''` stands for none |
+
+Changed tables:
+
+| Table | Change |
+|---|---|
+| `teams` | `may_add_mcp_servers` (default false) and `mcp_placement` (`combined`/`separate`, NULL = `gateway.mcp.placement_default`), service admins only (`42501`, `teams_mcp_guardrail_guard`) |
+| `agents`, `agent_pools` | `mcp_access` (`all`/`selected`, default `all`), `mcp_mode` (`search`/`full`, NULL = `mcp.default_agent_mode`) |
+| `external_systems` | `category` also `mcp`; an `mcp` entry whose host an approved MCP server covers is refused (`governed_by_mcp_server`) |
+| `service_settings` | `mcp.*`, `gateway.mcp.placement_default` and `federation.allowed_audiences` (PRD Appendix B) with value checks (`service_settings_mcp_value`) |
+
+Admission (`afs.mcp_admission(subject_kind, subject_id)`, security invoker): one row per live primitive of every server the subject's team can reach (published enterprise servers, enterprise servers it has a switch for, its own servers), with `allowed`, the deciding `level` and the first reason in this order: `server_not_published`, `server_suspended`, `server_not_enabled_for_team`, `server_not_enabled_for_agent`, `primitive_blocked_service`, `primitive_blocked_team`, `primitive_blocked_agent`, `primitive_pending_review`. A block at any level wins; within a level the most specific rule wins (exact name, then glob, then class) and, at equal specificity, a block. Class rules apply only to tools of servers with `trust_annotations`; read-only mode blocks every tool not marked `readOnlyHint`. `rate_limit_per_minute` is the tightest matching rule. View: `effective_agent_mcp` (security invoker) lists the allowed rows per live agent and pool.
+
 ## Functions
 
 | Function | Used by | Purpose |
@@ -302,6 +336,15 @@ View: `effective_agent_routes` (security invoker) lists, per live agent and pool
 | `afs.collab_handoff_create(...)`, `collab_handoff_consume(...)`, `collab_session_get(...)`, `collab_session_revoke(...)` | `afs_edge` (000020) | Edge sessions: store a handoff (hash only; the team must have a live collaboration agent, else `23503`), consume it once for the right host and open a session, read a live session (nothing for a deleting or deleted team), revoke one |
 | `afs.purge_collab_edge_sessions() → bigint` | reconciler (000020) | Deletes sessions and handoffs expired or revoked more than an hour ago |
 | `afs.capabilities_ok(text[])`, `afs.dns_name_ok(jsonb)`, `afs.cidr_list_ok(jsonb)` | checks (000020) | Validation helpers behind the new constraints |
+| `afs.mcp_admission(subject_kind, subject_id)` | `afs_app`, gateway, reconciler, readonly (000024) | The MCP decision per primitive, above |
+| `afs.mcp_setting(key) → jsonb` | `afs_app`, gateway, reconciler, readonly (000024) | An `mcp.*`, `gateway.mcp.*` or `federation.*` setting. SECURITY DEFINER |
+| `afs.mcp_credential_path(team_id, slug) → text` | API (000024) | `<prefix>/<namespace>/_gateway/mcp/<slug>`, or `<prefix>/_service/gateway/mcp/<slug>` for NULL |
+| `afs.claim_mcp_oauth_state(state_hash) → table(team_id, server_id, created_by, code_verifier_arn)` | `afs_app` (000024) | Marks an unexpired, unused state used and returns it once; nothing for any other |
+| `afs.mcp_capture_open() → text` | `afs_app`, gateway, reconciler (000024) | The open capture window's id, or NULL |
+| `afs.mcp_governed_host(host) → text` | `afs_app`, reconciler, readonly (000024) | The approved MCP server whose URL host is this host |
+| `afs.mcp_approver(team_id, tier) → text` | `afs_app` (000024) | `team_admin` or `security` under `mcp.team_server_approval`; enterprise servers go to security |
+| `afs.mcp_review_queue()`, `afs.mcp_events_for_review(from, to, team_id, server_id, limit)` | `afs_app` as a service admin or security operator (000024) | Pending servers and held primitives of every team; the ledger across teams (at most 1000 rows). `42501` for other callers |
+| `afs.ensure_mcp_event_partitions(days)`, `afs.drop_old_mcp_event_partitions()`, `afs.rollup_mcp_usage(day)` | reconciler (000024) | Daily partitions from yesterday to `days` ahead; drop whole partitions older than `mcp.events_retention_months`; replace a day of `mcp_usage_daily` |
 | `afs.provider_for_host(host) → text` | API, gateway (000023) | The first provider by name whose host globs match the host (case-insensitive), else `other`. SECURITY DEFINER |
 | `afs.provider_enabled(provider) → boolean` | API, reconciler, gateway, billing, readonly (000023) | The provider's switch; `internal` is always on, an unknown provider off |
 | `afs.route_admission(subject_kind, subject_id) → table(endpoint_id, slug, model_name, reason)` | `afs_app`, reconciler, gateway, readonly (000023) | Every enabled route model in the subject's team set, ordered by slug and model, with the first failing level: `provider_disabled`, `route_not_enabled_for_service`, `route_not_enabled_for_team`, `route_not_enabled_for_agent`, `model_not_priced` (a `free` or `capacity` route needs no price); null when callable |
@@ -336,3 +379,5 @@ From 000022, `agent_models` and `pool_models` send `agent_models:<team_id>:` and
 From 000020, `team_collaboration` and `agent_collaboration` send `team_collaboration:<team_id>:` and `agent_collaboration:<team_id>:` (they have no `id` column, so the id part is empty; the reconciler re-reads the team).
 
 From 000023, the gateway tables send `<table>:<team_id>:<id>` where the id part is the row's `id`, else its `endpoint_id` (`endpoint_models`, `endpoint_credentials`, `team_model_endpoints`, ...), else the provider for `inference_providers` (`inference_providers::bedrock`). Service endpoints leave the team part empty.
+
+From 000024, the MCP tables send `<table>:<team_id>:<id>`; enterprise rows leave the team part empty. Tables with composite keys carry a generated `id` (`team_mcp_servers` `<team>/<server>`, `agent_mcp_servers` `<agent>/<server>`, `pool_mcp_servers` `<pool>/<server>`, `mcp_hosted_specs` the server id). `mcp_primitives` notifies on insert, delete and a change of status, digest, annotations or removal, not on `last_seen`; `mcp_federation_states` on a requested test.

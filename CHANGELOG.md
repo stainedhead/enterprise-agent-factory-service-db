@@ -3,6 +3,20 @@
 All notable changes to this repository. Versions follow semver. `-db` and `-restapi` release in lockstep
 with the same version number.
 
+## v1.3.0 (2026-11-25)
+
+Schema migrations 000001–000024. Not yet tagged. Lockstep with `-restapi` 1.3.0. Spec `specs/261125-mcp-gateway/`.
+
+- **000024 Governed MCP servers** (database contract section 7.5, decisions CD-50 to CD-52; root `mcp-gateway-PRD.md`, MCP-DB-1 to MCP-DB-7):
+  - `mcp_servers` (enterprise and team, slugs never shared between them, review transitions, publish needs approval), `mcp_hosted_specs` (pinned image digests), `mcp_primitives` (digest pinning, held changes, the gateway cannot approve)
+  - opt-in per team (`team_mcp_servers`, needs the team's own gateway), narrowing per agent and pool, `mcp_policies` at service, team, agent and pool level; defaults switched on for new teams
+  - `mcp_credentials` (ARNs at `_gateway/mcp/<slug>`), single-use `mcp_oauth_states`, append-only `mcp_reviews`, `mcp_federation_states`, `mcp_query_captures`, per-agent and per-pool federated identities
+  - the append-only, day-partitioned `mcp_events` ledger (query text only inside a capture window) and `mcp_usage_daily`
+  - `afs.mcp_admission` and the view `effective_agent_mcp`; review queue and cross-team ledger functions for security operators
+  - `teams.may_add_mcp_servers` and `mcp_placement`; `mcp_access` and `mcp_mode` on agents and pools; `external_systems.category` `mcp`; `mcp.*` settings
+  - row-level security on every new team-owned table (per-namespace gateways see their teams only), grants per role, revisions and the change feed
+- **Upgrade:** no table rewrite and no new role.
+
 ## v1.2.0 (2026-11-25)
 
 Schema migrations 000001–000023. Not yet tagged. Lockstep with `-restapi` 1.2.0. Spec `specs/261125-model-endpoint-gateway/`.
