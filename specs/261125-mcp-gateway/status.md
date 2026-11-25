@@ -16,3 +16,4 @@ Created 2026-11-25. Branch `claude/project-thread-h4pz4q`; release 1.3.0 (not ta
 
 - 2026-11-25: 000024 and tests written; rebased onto merged 000023; MCP tests green on PostgreSQL 16.
 - 2026-11-25: 000024 merged (PR #24). 000025 added: security operators' MCP outbox events and ledger reads, team read of shared credentials; found by the `-restapi` adapter integration tests. `make gate` and the full integration suite green on PostgreSQL.
+- 2026-11-25: 000025 merged (PR #25). 000026 added: OAuth connect states store no verifier (afs-api derives it), so afs-api never reads a secret back; `TestMcpOAuthStateWithoutVerifier`.
