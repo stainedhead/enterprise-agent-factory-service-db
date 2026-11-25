@@ -191,6 +191,11 @@ New tables:
 | `pool_models` | The same for pools | Same rules and constraint names with `pool_id` |
 | `team_inference_profiles` | The Bedrock application inference profile per (team, model), written by the reconciler | PK `(team_id, model_id)`; `state` creating, active or retiring (`retire_after` set exactly when retiring); ARN checked by pattern. `afs_app` and `afs_gateway` read; the reconciler writes. Rows are copied to `team_models.inference_profile_arn` until 2.0.0 |
 
+Access added by 000025: security operators write the `mcp_server.*` and `mcp_primitive.*` outbox events of their
+reviews (`app_operator_mcp_events` on `outbox_events`) and read every team's `mcp_events` and `mcp_usage_daily`
+(`app_security_read`); every `afs_app` caller reads the `_shared` rows of `mcp_credentials` (`app_shared_credential_read`,
+ARN and state only), so a team sees whether an enterprise server's shared credential is set.
+
 Changed tables:
 
 | Table | Change |
