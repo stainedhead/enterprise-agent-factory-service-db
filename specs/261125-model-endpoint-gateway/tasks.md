@@ -15,4 +15,4 @@
 | 11 | Green: all tests pass; coverage at least 90% | Done |
 | 12 | Docs: data model, README, AGENTS, CHANGELOG, operations, PRD stories | Done |
 | 13 | Quality gate and design review | Done |
-| 14 | Commit, push, PR, CI, merge | In progress |
+| 14 | Commit, push, PR, CI, merge | Done |
