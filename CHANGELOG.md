@@ -5,7 +5,7 @@ with the same version number.
 
 ## v1.3.0 (2026-11-25)
 
-Schema migrations 000001–000025. Not yet tagged. Lockstep with `-restapi` 1.3.0. Spec `specs/261125-mcp-gateway/`.
+Schema migrations 000001–000026. Not yet tagged. Lockstep with `-restapi` 1.3.0. Spec `specs/261125-mcp-gateway/`.
 
 - **000024 Governed MCP servers** (database contract section 7.5, decisions CD-50 to CD-52; root `mcp-gateway-PRD.md`, MCP-DB-1 to MCP-DB-7):
   - `mcp_servers` (enterprise and team, slugs never shared between them, review transitions, publish needs approval), `mcp_hosted_specs` (pinned image digests), `mcp_primitives` (digest pinning, held changes, the gateway cannot approve)
@@ -19,6 +19,7 @@ Schema migrations 000001–000025. Not yet tagged. Lockstep with `-restapi` 1.3.
   - a security operator writes the `mcp_server.*` and `mcp_primitive.*` outbox events of the reviews it makes, on enterprise and any team's servers (`app_operator_mcp_events`), and nothing else
   - security operators read every team's `mcp_events` and `mcp_usage_daily` (usage reports), as the PRD's ledger access says
   - a team reads the shared (`_shared`) credential rows of enterprise servers, so it sees whether the credential is set; it cannot change them and never sees another team's
+- **000026 OAuth connect without a stored verifier:** `mcp_oauth_states.code_verifier_arn` becomes optional. `afs-api` derives the PKCE verifier from the state with a keyed HMAC, so it never reads a secret back at the callback.
 - **Upgrade:** no table rewrite and no new role.
 
 ## v1.2.0 (2026-11-25)
