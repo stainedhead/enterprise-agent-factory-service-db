@@ -35,6 +35,25 @@ SELECT afs.drop_partitions_older_than(13);   -- returns the names of the dropped
 
 Migrations are forward-only in production. Fix a problem with a new migration, not with `down`.
 
+### Upgrading to 1.2.0 (migration 000023)
+
+Release 1.2.0 embeds migration 000023 (team model gateway). `-restapi` 1.2.0 applies it at startup; run
+`afs-migrate up` first if you prefer to apply it yourself.
+
+- **Upgrade window.** No step rewrites a table. Adding columns to `teams`, `agents`, `agent_pools` and the partitioned
+  `usage_events` takes brief `ACCESS EXCLUSIVE` locks; the new checks are validated under `SHARE UPDATE EXCLUSIVE`,
+  which scans `usage_events` partitions while writes continue. Run it when the gateway is quiet.
+- **No new role.** 000023 needs no `bootstrap-roles` run.
+- **Version skew.** 1.1.0 services keep working against the 000023 schema: Bedrock calls still write `model_id`, and
+  `agents.default_model_id` still names a model of the catalog when `default_route` is NULL. Roll `-restapi` forward
+  to 1.2.0 to use routes.
+- **Existing data.** Every existing agent and pool gets `route_access = 'all'` and no default route; every team gets
+  `may_add_model_endpoints = false` and `gateway_deployment = 'shared'`. Every provider is on except Azure and Google.
+  No endpoint is enabled, so nothing changes until a service admin enables one.
+- **Down.** `afs-migrate down 1` is for local use. It refuses while any agent or pool has a default route; it keeps
+  route usage as `model_id = '<route>/<model>'` and route cost rows as `gateway` and `cur_other`, and drops every
+  endpoint, price, credential reference, selection and statement.
+
 ### Upgrading to 1.1.0 (migration 000022)
 
 Release 1.1.0 embeds migration 000022 (team orchestration agent and model access). `-restapi` 1.1.0 applies it at startup;
