@@ -157,13 +157,14 @@ func TestMigration000022(t *testing.T) {
 		enableBuzz(t, conn)
 		orchTeam(t, conn, 1, "public")
 		orchTeamTool(t, conn, 2, "public", "buzz")
-		if n, err := migrate.Down(t.Context(), conn, migs, 1); err != nil || n != 1 {
+		above := len(migs) - orchestrationVersion + 1 // 000022 and every migration after it
+		if n, err := migrate.Down(t.Context(), conn, migs, above); err != nil || n != above {
 			t.Fatalf("down: n=%d err=%v", n, err)
 		}
 		if n := count(t, conn, `SELECT count(*) FROM afs.agents WHERE role = 'collaboration'`); n != 2 {
 			t.Errorf("%d collaboration agents after down", n)
 		}
-		if n, err := migrate.Up(t.Context(), conn, migs); err != nil || n != 1 {
+		if n, err := migrate.Up(t.Context(), conn, migs); err != nil || n != above {
 			t.Fatalf("up again: n=%d err=%v", n, err)
 		}
 	})

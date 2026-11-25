@@ -8,7 +8,7 @@ import (
 	"github.com/stainedhead/enterprise-agent-factory-service-db/migrations"
 )
 
-// 000021 (taken down together with 000022 above it): the down migration restores the 000020 collab_routes() columns and grants; up again adds the client ids.
+// 000021 (taken down together with the migrations above it): the down migration restores the 000020 collab_routes() columns and grants; up again adds the client ids.
 func TestMigration000021(t *testing.T) {
 	conn := migrated(t)
 	ctx := t.Context()
@@ -25,13 +25,14 @@ func TestMigration000021(t *testing.T) {
 	if !strings.HasSuffix(cols(), "provider_client_id provider_cli_client_id") || !acl() {
 		t.Fatalf("after up: %s", cols())
 	}
-	if n, err := migrate.Down(ctx, conn, migs, 2); err != nil || n != 2 {
+	above := len(migs) - 20 // 000021 and every migration after it
+	if n, err := migrate.Down(ctx, conn, migs, above); err != nil || n != above {
 		t.Fatalf("down: n=%d err=%v", n, err)
 	}
 	if !strings.HasSuffix(cols(), "collab_client_secret_arn") || !acl() {
 		t.Fatalf("after down: %s", cols())
 	}
-	if n, err := migrate.Up(ctx, conn, migs); err != nil || n != 2 {
+	if n, err := migrate.Up(ctx, conn, migs); err != nil || n != above {
 		t.Fatalf("up again: n=%d err=%v", n, err)
 	}
 	if !strings.HasSuffix(cols(), "provider_cli_client_id") || !acl() {

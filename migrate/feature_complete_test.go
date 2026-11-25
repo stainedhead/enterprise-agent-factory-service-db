@@ -100,6 +100,29 @@ INSERT INTO afs.agent_models (team_id, agent_id, model_id) VALUES ('`+teamB+`', 
 INSERT INTO afs.pool_models (team_id, pool_id, model_id) VALUES ('`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', 'claude-sonnet');
 INSERT INTO afs.team_inference_profiles (team_id, model_id, inference_profile_arn, state)
  VALUES ('`+teamB+`', 'claude-sonnet', 'arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc123', 'active');
+-- Team model gateway (000023): team B's own endpoints, models, prices, a proposal, a credential, a capacity cost,
+-- an Azure federation, opt-ins of team B and swarm B, and route selections of an agent and a pool.
+UPDATE afs.teams SET may_add_model_endpoints = true WHERE id = '`+teamB+`';
+INSERT INTO afs.model_endpoints (id, team_id, slug, display_name, owner, purpose, location, base_url, auth_kind, pricing_mode, enabled) VALUES
+ ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX', '`+teamB+`', 'search-llm', 'Search LLM', 'search-ml', 'Ranking', 'external', 'https://llm.search.example.com/v1', 'bearer', 'per_token', true),
+ ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBV', '`+teamB+`', 'search-vllm', 'Search vLLM', 'search-ml', 'Embeddings', 'in_namespace', 'http://vllm:8000/v1', 'none', 'capacity', true);
+INSERT INTO afs.endpoint_models (endpoint_id, model_name, max_output_tokens) VALUES
+ ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX', 'ranker-1', 4096), ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBV', 'embed-1', 1),
+ ('mep_00000000000000000000000002', 'hermes-4-70b', 8192);
+INSERT INTO afs.endpoint_model_prices (endpoint_id, model_name, effective_from, input_per_mtok_usd, output_per_mtok_usd) VALUES
+ ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX', 'ranker-1', now() - interval '1 day', 1, 2);
+INSERT INTO afs.endpoint_price_proposals (id, endpoint_id, model_name, effective_from, input_per_mtok_usd, output_per_mtok_usd) VALUES
+ ('epp_01JD3Z5Y8K2M4N6P8Q0R2S4TBW', 'mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX', 'ranker-1', now(), 1, 3);
+INSERT INTO afs.endpoint_credentials (endpoint_id, scope, team_id, secret_arn) VALUES
+ ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX', '`+teamB+`', '`+teamB+`', 'arn:aws:secretsmanager:us-east-1:111122223333:secret:afs/afs-t-search/_gateway/search-llm-AbCdEf');
+INSERT INTO afs.endpoint_capacity_costs (endpoint_id, team_id, effective_from, monthly_usd) VALUES
+ ('mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBV', '`+teamB+`', '2026-11-01', 900);
+INSERT INTO afs.endpoint_federations (endpoint_id, team_id, kind, tenant_id, client_id) VALUES
+ ('mep_00000000000000000000000004', '`+teamB+`', 'azure', '11111111-2222-3333-4444-555555555555', '66666666-7777-8888-9999-000000000000');
+INSERT INTO afs.team_model_endpoints (team_id, endpoint_id) VALUES
+ ('`+teamB+`', 'mep_00000000000000000000000002'), ('`+swarmB+`', 'mep_00000000000000000000000002');
+INSERT INTO afs.agent_model_endpoints (team_id, agent_id, endpoint_id) VALUES ('`+teamB+`', 'agt_01JD3Z5Y8K2M4N6P8Q0R2S4TB3', 'mep_01JD3Z5Y8K2M4N6P8Q0R2S4TBX');
+INSERT INTO afs.pool_model_endpoints (team_id, pool_id, endpoint_id) VALUES ('`+swarmB+`', 'pool_01JD3Z5Y8K2M4N6P8Q0R2S4TBH', 'mep_00000000000000000000000002');
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -737,7 +760,8 @@ func TestEveryRevisionTableAnnouncesChanges(t *testing.T) {
 			// A no-op update of one row: the trigger fires on every updated row.
 			var want string
 			err := conn.QueryRow(ctx, `UPDATE `+ident+` x SET `+col+` = `+col+` WHERE ctid = (SELECT ctid FROM `+ident+` LIMIT 1)
-				RETURNING $1::text || ':' || coalesce(to_jsonb(x)->>'`+teamCol+`', '') || ':' || coalesce(to_jsonb(x)->>'id', '')`, tb.Name).Scan(&want)
+				RETURNING $1::text || ':' || coalesce(to_jsonb(x)->>'`+teamCol+`', '') || ':' ||
+					coalesce(to_jsonb(x)->>'id', CASE WHEN $1::text = 'inference_providers' THEN to_jsonb(x)->>'provider' END, to_jsonb(x)->>'endpoint_id', '')`, tb.Name).Scan(&want)
 			if err != nil {
 				t.Fatalf("update one row (extend the fixture if there is none): %v", err)
 			}

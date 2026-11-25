@@ -1210,6 +1210,24 @@ Specified in [specs/261123-orchestration-and-model-access/orchestration-and-mode
 
 **DB-US-61 · Model access levels.** All, one or several models at team, agent and pool level; price rule; `model_admission`. Proven by `TestModelAccess`, `TestTeamInferenceProfiles`.
 
+### 5.y Team model gateway (migration 000023, release 1.2.0)
+
+Specified in the root [model-endpoint-gateway-PRD.md](https://github.com/stainedhead/enterprise-agent-factory-service/blob/main/model-endpoint-gateway-PRD.md) (sections 7, 9.4 and 11; Appendix C.1 TC-DB-01 to TC-DB-15; Appendix D.2 MEG-DB-1 to MEG-DB-7) and the root database contract section 7.4 (CD-42, CD-43); spec [specs/261125-model-endpoint-gateway/](specs/261125-model-endpoint-gateway/spec.md). The stories continue this document's numbering.
+
+**DB-US-62 · Endpoint, model, price and metadata tables (MEG-DB-1).** The twelve tables with the constraints of section 7.4, each rejected case named. Proven by `TestModelEndpointConstraints` (TC-DB-01, TC-DB-02), `TestEndpointCredentials` (TC-DB-05), `TestEndpointModelsPricesAndMetadata`, `TestModelGatewayGrants` (TC-DB-06).
+
+**DB-US-63 · New columns on existing tables (MEG-DB-2).** `teams.may_add_model_endpoints` and `gateway_deployment`, `route_access` and `default_route` on agents and pools (CD-42), `usage_events` route and timing columns, `cost_daily` sources `route` and `route_capacity`; existing rows keep their meaning. Proven by `TestRouteDefaultModels`, `TestRouteUsageAndCost`, `TestMigration000023` (TC-DB-10).
+
+**DB-US-64 · Route admission (MEG-DB-3).** `afs.route_admission` with the reasons in the fixed order, the view `effective_agent_routes`, the `_gateway` scope of `afs.secret_path`. Proven by `TestRouteAdmission` (TC-DB-07, TC-DB-08, TC-DB-11, TC-DB-12), `TestEndpointCredentials`.
+
+**DB-US-65 · Isolation and grants (MEG-DB-4).** Row-level security on every new team-owned table with rows in `seedOtherTeams`; per-namespace gateways read only their team and the service rows; service-only tables written by service admins only. Proven by `TestCrossTeamWritesChangeNothing`, `TestEveryTeamTableHasRowLevelSecurity`, `TestModelGatewayPermissions` (TC-DB-03, TC-DB-04, TC-DB-13), `TestModelGatewayGrants`.
+
+**DB-US-66 · Seeds (MEG-DB-5).** Providers on by default except Azure and Google (service-admin selection); five built-in catalog entries, all off, placeholders block enabling (CD-43). Proven by `TestGatewaySeeds` (TC-DB-14), `TestModelEndpointConstraints/CD-43_placeholders_block_switching_a_built-in_on`.
+
+**DB-US-67 · Bedrock-off guard (MEG-DB-6).** Bedrock cannot be turned off unless the service default is an enabled route model selected for every live team; while it is off the fallback stays usable. Proven by `TestBedrockOffGuard` (TC-DB-15).
+
+**DB-US-68 · Change feed and reversibility (MEG-DB-7).** Every new table announces changes; up/down/up restores the 000022 catalog. Proven by `TestModelGatewayChangeFeed` (TC-DB-09), `TestEveryRevisionTableAnnouncesChanges`, `TestMigration000023` (TC-DB-10).
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |
@@ -1240,6 +1258,7 @@ Specified in [specs/261123-orchestration-and-model-access/orchestration-and-mode
 | C2 Public web UI | No migration. `-restapi` `afs-edge` uses `collab_routes()`, `collab_settings()`, `collab_principal*()`, `record_collab_access()`; this repository supports with fixes and a load check of the principal functions in the dev environment |
 | C3 REST API and managed mode | No migration. `emit_collab_secret_detected()`, `paperclip` secret rows and link-state writes are exercised by `-restapi`; gaps found become a minor migration (000021) |
 | C4 People and reports | No migration expected. `collaboration_access` read by the collaboration report; retention verified with the monthly job |
+| Model gateway (release 1.2.0) | Migration 000023 (DB-US-62 to DB-US-68, MEG-DB-1 to MEG-DB-7), lockstep with `-restapi` 1.2.0 |
 
 ## 8. Definition of done (every change)
 

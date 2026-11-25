@@ -63,6 +63,23 @@ flowchart LR
 - **Model access** is all, one or several models, narrowed in three steps (service, team, agent or pool); a model also
   needs a price in force. Defaults are open. `afs.model_admission` says why a model is refused.
 
+## Team model gateway (1.2.0)
+
+Migration 000023 lets agents call OpenAI-compatible **model endpoints** (routes) through the team gateway, beside
+Bedrock, and lets service admins switch whole **providers** off, Bedrock included.
+
+- **Providers** (`inference_providers`): one switch each. Bedrock, OpenAI, OpenRouter, Nous Portal, OpenCode and other
+  hosts start on; Azure and Google start off and are selected for teams by service admins only. Bedrock cannot be
+  turned off until the service default model is a route every live team can use (`no_fallback_model`).
+- **Endpoints** (`model_endpoints`): service endpoints, off until a service admin enables them and a team opts in
+  (`team_model_endpoints`), and team endpoints a team-admin declares when the team has `may_add_model_endpoints`. The
+  provider comes from the base URL host. Five built-in catalog entries ship off with placeholder URLs.
+- **Routes for agents and pools**: `route_access` all or selected, `default_route` plus a model name, and
+  `afs.route_admission` with the first failing reason. Credentials are Secrets Manager ARNs at
+  `<prefix>/<namespace>/_gateway/<route>`; federation rows hold identifiers only.
+- **Usage and cost**: route calls are metered in `usage_events` (`endpoint_id`, `model_name`, timings) and costed in
+  `cost_daily` as `route` and `route_capacity`, with effective-dated prices, billing proposals and provider statements.
+
 ## Roles and row-level security
 
 ![Roles and row-level security](docs/images/db-roles-rls.svg)
@@ -101,9 +118,9 @@ make cover      # migrate coverage (set AFS_TEST_DATABASE_URL for the integratio
 
 ## Status
 
-Feature complete at schema `000022`: migrations `000001_core_schema` to `000022_orchestration_and_model_access`, with
+Feature complete at schema `000023`: migrations `000001_core_schema` to `000023_model_endpoint_gateway`, with
 integration tests that prove every acceptance criterion of the [PRD](enterprise-agent-factory-service-db-PRD.md)
-this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. 000021 adds the identity provider's console and CLI client ids to `collab_routes()` so the edge accepts REST bearer tokens from CLI and console sign-in. 000022 (release 1.1.0) turns the collaboration agent into the team's orchestration agent (Paperclip or Buzz), adds private and public exposure levels with a team limit, and lets agents and pools use all, one or several models. Operators read the [upgrade notes](user-docs/operations.md#upgrading-to-110-migration-000022) first. The last tagged release is `v1.0.1` (see `CHANGELOG.md`); `-db` and `-restapi` share version numbers; `-db` and `-restapi` share version numbers.
+this repository can prove. 000020 adds Paperclip team collaboration (a collaboration agent per team, its settings, managed secrets, and the `afs_edge` role); operators run `afs-migrate bootstrap-roles` before the release that embeds it. 000021 adds the identity provider's console and CLI client ids to `collab_routes()` so the edge accepts REST bearer tokens from CLI and console sign-in. 000022 (release 1.1.0) turns the collaboration agent into the team's orchestration agent (Paperclip or Buzz), adds private and public exposure levels with a team limit, and lets agents and pools use all, one or several models. 000023 (release 1.2.0) adds the team model gateway: provider switches, service and team model endpoints, route selection, route usage and cost. Operators read the [upgrade notes](user-docs/operations.md#upgrading-to-120-migration-000023) first. The last tagged release is `v1.0.1` (see `CHANGELOG.md`); `-db` and `-restapi` share version numbers.
 
 ## Contributing
 

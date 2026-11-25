@@ -3,6 +3,20 @@
 All notable changes to this repository. Versions follow semver. `-db` and `-restapi` release in lockstep
 with the same version number.
 
+## v1.2.0 (2026-11-25)
+
+Schema migrations 000001–000023. Not yet tagged. Lockstep with `-restapi` 1.2.0. Spec `specs/261125-model-endpoint-gateway/`.
+
+- **000023 Team model gateway** (database contract section 7.4, decisions CD-42 and CD-43; root `model-endpoint-gateway-PRD.md`, MEG-DB-1 to MEG-DB-7):
+  - `inference_providers`: one switch per provider, Bedrock included; Azure and Google off and service-selected; `afs.provider_for_host`, `afs.provider_enabled`; Bedrock cannot be turned off without a valid route fallback (`no_fallback_model`)
+  - `model_endpoints` (service and team rows, provider derived from the host), five built-in catalog entries off with placeholder URLs (`endpoint_base_url_placeholder`), `endpoint_models`, append-only `endpoint_model_prices`, `endpoint_price_proposals`, `endpoint_capacity_costs`
+  - `endpoint_credentials` (ARNs at `<prefix>/<namespace>/_gateway/<route>` or `<prefix>/_service/gateway/<route>`), `endpoint_federations` (identifiers only), `provider_statements`
+  - `team_model_endpoints`, `agent_model_endpoints`, `pool_model_endpoints`; `teams.may_add_model_endpoints` and `gateway_deployment`; `route_access` and `default_route` on agents and pools (CD-42: the foreign keys of `default_model_id`/`model_id` become a trigger that applies while `default_route` is NULL)
+  - the view `effective_agent_routes` and `afs.route_admission`; `effective_agent_models` and `model_admission` honour the Bedrock switch
+  - `usage_events` route and timing columns (`model_id` nullable); `cost_daily` sources `route` and `route_capacity`; `models.default_model_id` may be a `<route>/<model>`
+  - row-level security on every new team-owned table, grants per role, revisions and the change feed
+- **Upgrade:** no table rewrite and no new role; see `user-docs/operations.md`.
+
 ## v1.1.0 (2026-11-23)
 
 Schema migrations 000001–000022. Not yet tagged. Lockstep with `-restapi` 1.1.0. Spec `specs/261123-orchestration-and-model-access/`.

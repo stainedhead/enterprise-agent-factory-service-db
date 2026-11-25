@@ -1,6 +1,6 @@
 # Data model
 
-Schema `afs`, PostgreSQL 17. Current version: migration 000022. Source: `migrations/`. Keep this file in step with every migration.
+Schema `afs`, PostgreSQL 17. Current version: migration 000023. Source: `migrations/`. Keep this file in step with every migration.
 
 ## Entity overview
 
@@ -65,6 +65,18 @@ erDiagram
     agents ||--o| agent_collaboration : "worker link"
     teams ||--o{ collaboration_access : "access counts"
     agent_templates ||--o{ agent_pools : "catalog"
+    inference_providers ||--o{ model_endpoints : "provider switch"
+    teams ||--o{ model_endpoints : "team endpoints"
+    model_endpoints ||--o{ endpoint_models : "route models"
+    endpoint_models ||--o{ endpoint_model_prices : "priced by"
+    endpoint_models ||--o{ endpoint_price_proposals : "proposed"
+    model_endpoints ||--o{ endpoint_credentials : "ARN only"
+    model_endpoints ||--o{ endpoint_federations : "per team"
+    model_endpoints ||--o{ endpoint_capacity_costs : "per team"
+    model_endpoints ||--o{ provider_statements : "monthly"
+    teams ||--o{ team_model_endpoints : "opts in"
+    agents ||--o{ agent_model_endpoints : "selected routes"
+    agent_pools ||--o{ pool_model_endpoints : "selected routes"
     work_orders ||--o{ work_order_repos : "affected"
     work_order_repos ||--o{ work_order_notifications : ""
 ```
@@ -196,6 +208,40 @@ Changed tables:
 
 View: `effective_agent_models` (security invoker) lists, per live agent and pool, every model that passes the service, the team and the agent or pool level and has a price in force, with `is_default`.
 
+### Team model gateway (000023)
+
+Spec: `specs/261125-model-endpoint-gateway/`; contract: root `docs/contracts/database-contract.md` section 7.4 (decisions CD-42, CD-43); PRD: root `model-endpoint-gateway-PRD.md` sections 7, 9.4 and 11. Agents reach OpenAI-compatible **model endpoints** (routes) through the team gateway, beside Bedrock. Service admins switch whole **providers** on and off, Bedrock included; a route is named by its `slug` and a model by `<slug>/<model>`.
+
+New tables:
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `inference_providers` | One switch per provider, Bedrock included | PK `provider` (`^[a-z][a-z0-9_]{1,30}$`, not `internal`); `hosts` FQDN globs (at most 20, `*` stands for label characters); `enabled`; `team_selection` (`team_admin` or `service_admin`); `disabled_reason`; `fallback_model` (Bedrock only, `inference_providers_fallback_bedrock`); `version`, `changed_by`, `changed_at` set by the guard. Seeds: `bedrock`, `openai`, `openrouter`, `nous`, `opencode` and `other` on with team-admin selection; `azure` and `google` off with service-admin selection. `afs_app` writes only as a service admin (`42501`), may update `enabled`, `team_selection`, `disabled_reason`, `fallback_model` and insert new providers, never delete; `provider` is immutable (`55000`). Turning Bedrock off needs a valid fallback (`no_fallback_model`, below) |
+| `model_endpoints` | Service endpoints (`team_id` NULL, service admins) and team endpoints (`team_id` set, team-admins of a team with `may_add_model_endpoints`) | Id `mep_`. `slug` `^[a-z][a-z0-9-]{1,30}$`, not `bedrock` (`model_endpoints_slug_check`), unique among service rows, unique per team, and a team slug never equals a service slug (`model_endpoints_slug_taken`, `23505`). `provider` is set by trigger: `internal` for `in_namespace`, the listed provider whose host glob matches, else `internal` for corporate and `other` for external team rows; a service admin may name a provider for an unlisted external host (`model_endpoints_provider_check` refuses `internal` there; an unknown one is `model_endpoints_provider_fkey`, `23503`). `protocols` from `openai_chat`, `openai_responses`, `openai_embeddings`, no repeats. `location` `external`, `corporate` (https) or `in_namespace` (team rows only, `model_endpoints_in_namespace_check`; http allowed; host a bare Service name or `<svc>.<team namespace>[.svc[.cluster.local]]`, `model_endpoints_in_namespace_host`). `auth_kind` `none`, `bearer`, `header` (with `auth_header`), `azure_federated`, `google_federated` (provider must match, `model_endpoints_auth_kind_provider`). `credential_mode` `shared` (service rows) or `per_team`; `pricing_mode` `per_token`, `capacity`, `free`; `requires_terms` (service rows only; team opt-in by service admins); `use_provider_cost`; `timeout_seconds` 5–3600; `max_body_mib` 1–100; `ca_bundle` PEM; `metrics_port` (in-namespace only); `external_system_id` (same team, `model_endpoints_external_system_id_fkey`). Created off. Switching on, or creating on, is refused while the provider is off (`provider_disabled`) or the base URL holds a placeholder (`endpoint_base_url_placeholder`). `team_id`, `slug` and `builtin` are fixed (`model_endpoints_identity_immutable`, `55000`); built-ins are never deleted. Built-in catalog (CD-43), service level, off, no models: `openrouter` (requires terms, provider cost), `nous-portal`, `opencode`, `azure-openai` (`https://<resource>.openai.azure.com/openai/v1`), `vertex-ai` (`<project>`, `<location>`) |
+| `endpoint_models` | The model names a route serves | PK `(endpoint_id, model_name)`; `team_id` copied from the endpoint; `model_name` printable, 1–200, not starting with `/` or a space; `max_output_tokens` 1–1000000; `context_tokens`; `enabled`. At most 500 per endpoint (`endpoint_models_limit`) |
+| `endpoint_model_prices` | Effective-dated USD prices per million tokens | PK `(endpoint_id, model_name, effective_from)`; `input`, `output`, `cached_input` (NULL bills cached input at the input price), `request_fee_usd`; `source` `manual`, `price_list`, `transfer`, `provider`. Append-only (`endpoint_model_prices_append_only`, `55000`; rows go only with their model). `afs_app` writes as a service admin |
+| `endpoint_price_proposals` | Prices found by `afs-billing` | Id `epp_`; `state` `pending`, `approved`, `rejected`, `superseded`; one pending per model (`endpoint_price_proposals_one_pending`); new rows are pending (`endpoint_price_proposals_pending`); `decided_at/by` exactly when approved or rejected. Only service admins decide; approval inserts the price (`source` from the proposal) |
+| `endpoint_capacity_costs` | Monthly or hourly cost of a capacity route for one team | PK `(endpoint_id, team_id, effective_from)`; exactly one of `monthly_usd`, `hourly_usd`; `allocation` `by_tokens` or `by_agent`; endpoint must be `capacity` (`endpoint_capacity_costs_mode`). Service admins write it |
+| `endpoint_credentials` | Secrets Manager reference of a route credential, never a value | PK `(endpoint_id, scope)`; `scope` `_shared` (`team_id` NULL) or the team id (`endpoint_credentials_scope_check`). The ARN must name `<prefix>/_service/gateway/<slug>` (shared) or `afs.secret_path(team, '_gateway', slug)` = `<prefix>/<namespace>/_gateway/<slug>` (`endpoint_credential_path`). Only `bearer` and `header` endpoints take one (`endpoint_credentials_auth_kind`); the scope must match `credential_mode` (`endpoint_credentials_scope`); a team endpoint's credential is its own team's (`endpoint_credentials_endpoint_team`). Team-admins write their team's rows, service admins the shared ones. The reconciler sets `status` (`set`, `missing`) without a new version |
+| `endpoint_federations` | Workload identity federation per endpoint and team | PK `(endpoint_id, team_id)`; `kind` `azure` (`tenant_id`, `client_id` UUIDs) or `google` (`project_number`, `pool_id`, `provider_id`, `project_id`, `location`), checked by `endpoint_federations_fields_check` and against the endpoint's `auth_kind` (`endpoint_federations_kind`). Identifiers only. Service admins write; the gateway sets `status`, `last_error`, `checked_at` without a new version |
+| `provider_statements` | Monthly provider statements imported by service admins | Id `pst_`; `period` the first of a month; `source` `nous_statement` or `opencode_csv`; `rows` up to 10000 `{teamId, model, amountUsd, tokens?}`; unique per endpoint, period and source; the endpoint cannot be deleted while statements exist. Service admins and `afs_billing`, `afs_readonly`, `afs_reconciler` read it; the gateway does not |
+| `team_model_endpoints` | A team's opt-in to a service endpoint | PK `(team_id, endpoint_id)`; service endpoints only (`team_model_endpoints_service_only`); `selected_by` set from the caller (`afs_app` cannot claim another). An endpoint with `requires_terms`, or of a provider with `team_selection = 'service_admin'`, is selected by service admins only (`42501`); a service-admin selection is removed by service admins only. Kept while the endpoint or provider is off. A new team is selected for the endpoint of the service default route |
+| `agent_model_endpoints`, `pool_model_endpoints` | The routes an agent or pool with `route_access = 'selected'` may use | PK `(team_id, agent_id|pool_id, endpoint_id)`; composite FK (cascade). The endpoint must be in the team's set (`agent_routes_team`, for both tables as the contract names it); at most 50 (`<table>_limit`) |
+
+Changed tables:
+
+| Table | Change |
+|---|---|
+| `teams` | `may_add_model_endpoints` (default false) and `gateway_deployment` (`shared` or `per_namespace`), service admins only (`42501` through `team_guardrail_guard`) |
+| `agents`, `agent_pools` | `route_access` (`all`/`selected`, default `all`) and `default_route` (a route slug, not `bedrock`). With `default_route` set, `default_model_id` is a model name on that route (CD-42): the foreign keys of `default_model_id` and `model_id` to `models` become the row trigger `<table>_default_route_ref`, which checks `models` only while `default_route` is NULL and keeps `model_id = default_model_id`; `models` refuses deleting or renaming a model in use. At commit the default route model must be admitted (`agents_default_route_allowed`, `agent_pools_default_route_allowed`). A value written as `<slug>/<model>` with a NULL `default_route` is split |
+| `usage_events` | `endpoint_id`, `model_name`, `usage_source` (`response`, `estimated`, `provider_cost`), `reasoning_tokens`, `ttft_ms`, `upstream_ms`, `gateway_ms`, `http_status`; `model_id` is nullable: an ok call has exactly one of `model_id` (Bedrock) and `endpoint_id` (route) (`usage_events_route_check`) |
+| `cost_daily` | Sources `route` and `route_capacity`; `model_id` holds `<route>/<model>` for them |
+| `service_settings` | `models.default_model_id` may be a `<route>/<model>` of an enabled service route (up to 240 characters); while Bedrock is off it must stay a valid fallback (`no_fallback_model`) |
+
+The Bedrock-off guard (`no_fallback_model`, `23514`): turning `bedrock` off needs `models.default_model_id` to be a `<route>/<model>` whose endpoint is an enabled service endpoint, whose model is enabled, whose provider is on, and that every live team has selected. While Bedrock is off, the provider of that route cannot be turned off and the default cannot move to a Bedrock model or an invalid route. Bedrock models drop out of `effective_agent_models`, and `model_admission` reports `provider_disabled` first.
+
+View: `effective_agent_routes` (security invoker) lists, per live agent and pool, every route model it may call now (`subject_kind`, `subject_id`, `team_id`, `endpoint_id`, `slug`, `model_name`, `is_default`).
+
 ## Functions
 
 | Function | Used by | Purpose |
@@ -256,6 +302,13 @@ View: `effective_agent_models` (security invoker) lists, per live agent and pool
 | `afs.collab_handoff_create(...)`, `collab_handoff_consume(...)`, `collab_session_get(...)`, `collab_session_revoke(...)` | `afs_edge` (000020) | Edge sessions: store a handoff (hash only; the team must have a live collaboration agent, else `23503`), consume it once for the right host and open a session, read a live session (nothing for a deleting or deleted team), revoke one |
 | `afs.purge_collab_edge_sessions() → bigint` | reconciler (000020) | Deletes sessions and handoffs expired or revoked more than an hour ago |
 | `afs.capabilities_ok(text[])`, `afs.dns_name_ok(jsonb)`, `afs.cidr_list_ok(jsonb)` | checks (000020) | Validation helpers behind the new constraints |
+| `afs.provider_for_host(host) → text` | API, gateway (000023) | The first provider by name whose host globs match the host (case-insensitive), else `other`. SECURITY DEFINER |
+| `afs.provider_enabled(provider) → boolean` | API, reconciler, gateway, billing, readonly (000023) | The provider's switch; `internal` is always on, an unknown provider off |
+| `afs.route_admission(subject_kind, subject_id) → table(endpoint_id, slug, model_name, reason)` | `afs_app`, reconciler, gateway, readonly (000023) | Every enabled route model in the subject's team set, ordered by slug and model, with the first failing level: `provider_disabled`, `route_not_enabled_for_service`, `route_not_enabled_for_team`, `route_not_enabled_for_agent`, `model_not_priced` (a `free` or `capacity` route needs no price); null when callable |
+| `afs.endpoint_in_team_set(team_id, endpoint_id) → boolean` | `afs_app`, reconciler, gateway, readonly (000023) | The team's own endpoint, or a service endpoint the team selected |
+| `afs.fallback_route_ok(value, except_provider) → boolean` | `afs_app`, readonly (000023) | Whether a `<route>/<model>` may be the service default while Bedrock is off (the guard's test) |
+| `afs.secret_path(team_id, '_gateway', name)` | API (000023) | The reserved agent part `_gateway` yields `<prefix>/<namespace>/_gateway/<route>` for route credentials |
+| `afs.host_globs_ok`, `afs.host_matches`, `afs.url_host`, `afs.route_model_slug`, `afs.route_model_name`, `afs.endpoint_protocols_ok`, `afs.statement_rows_ok`, `afs.gateway_sees_team` | checks, RLS (000023) | Helpers behind the new constraints and the gateway policies |
 
 ## Roles and session settings
 
@@ -264,8 +317,8 @@ View: `effective_agent_models` (security invoker) lists, per live agent and pool
 | `afs_owner` | migrations | Owns schema |
 | `afs_app` | afs-api | Desired state read/write, audit and outbox insert; **row-level security applies**, calls `authenticate_api_key`, `resolve_workload` and `team_directory` (000016); including (000013, 000014) the service-admin write policies on `agent_templates`, `service_settings`, `models`, `model_prices`, `storage_classes`, `team_models`, `role_bindings` and `users` |
 | `afs_reconciler` | afs-reconciler | Read all (except `idempotency_keys` response columns); write status, lifecycle columns, inference profile ARNs, outbox publication; (000013) clear the ceiling override, lower `budgets.amount_usd`, run `ensure_spend_counter`, `release_expired_reservations`, the partition functions and `drop_partitions_older_than`; read `spend_reservations`; (000014) update the outcome columns of `export_bundles`; (000016) update `agent_pools.state` and `deleted_at`, and create remediation teams through `instantiate_work_order_team`; (000019) record a work order's template secrets through `record_work_order_secret`; (000020) update the reconciler columns of `agent_collaboration`, write `managed_by = 'paperclip'` secrets, run the three key functions, `ensure_collaboration_access_partition` and `purge_collab_edge_sessions` |
-| `afs_gateway` | afs-gateway | Read budgets/models/prices; reserve and settle spend (counters, and from 000013 `ensure_spend_counter`, `reserve_spend_held`, `settle_reservation`); insert usage; (000016) `resolve_workload`; (000022) read `service_settings (key, value)`, `agent_models`, `pool_models`, `team_inference_profiles`, `effective_agent_models` and `model_admission` for model access |
-| `afs_billing` | afs-billing | Write daily costs and reconciliations; (000018) read `service_settings (key, value)` for `pricing.price_list_sync` and `team_models (team_id, model_id, inference_profile_arn)` for inference-profile attribution |
+| `afs_gateway` | afs-gateway | Read budgets/models/prices; reserve and settle spend (counters, and from 000013 `ensure_spend_counter`, `reserve_spend_held`, `settle_reservation`); insert usage; (000016) `resolve_workload`; (000022) read `service_settings (key, value)`, `agent_models`, `pool_models`, `team_inference_profiles`, `effective_agent_models` and `model_admission` for model access; (000023) read every gateway table except `provider_statements`, rows of service endpoints and, with `afs.team_ids` set (per-namespace gateways), only those teams; update the status columns of `endpoint_federations` |
+| `afs_billing` | afs-billing | Write daily costs and reconciliations; (000018) read `service_settings (key, value)` for `pricing.price_list_sync` and `team_models (team_id, model_id, inference_profile_arn)` for inference-profile attribution; (000023) read endpoints, route models, prices, price proposals, capacity costs, federations and statements, insert price proposals and update their `state` and `note` |
 | `afs_readonly` | reporting, support | Read all except API key hashes and audit payloads |
 | `afs_edge` | the collaboration edge (000020) | Login-less role created by `bootstrap/roles.sql` (run `afs-migrate bootstrap-roles` before applying 000020). **No privilege on any table, view or sequence.** `USAGE` on schema `afs`, `EXECUTE` on `collab_routes`, `collab_settings`, `collab_principal`, `collab_principal_key`, `record_collab_access`, `emit_collab_secret_detected`, `collab_handoff_create`, `collab_handoff_consume`, `collab_session_get`, `collab_session_revoke` and `schema_version`; may `LISTEN afs_desired_state`. Every function is `SECURITY DEFINER` and returns only its named columns 000022 adds `EXECUTE` on `orchestration_routes` and `orchestration_settings`; the role still holds no table privilege. |
 
@@ -281,3 +334,5 @@ nothing.
 From 000022, `agent_models` and `pool_models` send `agent_models:<team_id>:` and `pool_models:<team_id>:` (composite keys, no id), `team_inference_profiles` sends `team_inference_profiles:<team_id>:`, and `service_settings` sends `service_settings::<key>` for `models.*` and `orchestration.*` keys.
 
 From 000020, `team_collaboration` and `agent_collaboration` send `team_collaboration:<team_id>:` and `agent_collaboration:<team_id>:` (they have no `id` column, so the id part is empty; the reconciler re-reads the team).
+
+From 000023, the gateway tables send `<table>:<team_id>:<id>` where the id part is the row's `id`, else its `endpoint_id` (`endpoint_models`, `endpoint_credentials`, `team_model_endpoints`, ...), else the provider for `inference_providers` (`inference_providers::bedrock`). Service endpoints leave the team part empty.
