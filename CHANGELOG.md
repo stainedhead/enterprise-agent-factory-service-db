@@ -15,6 +15,8 @@ Schema migrations 000001–000026. Not yet tagged. Lockstep with `-restapi` 1.3.
   - `afs.mcp_admission` and the view `effective_agent_mcp`; review queue and cross-team ledger functions for security operators
   - `teams.may_add_mcp_servers` and `mcp_placement`; `mcp_access` and `mcp_mode` on agents and pools; `external_systems.category` `mcp`; `mcp.*` settings
   - row-level security on every new team-owned table (per-namespace gateways see their teams only), grants per role, revisions and the change feed
+- **Docs:** services connect with the `role` startup parameter set to their group role, so `current_user` guards hold for
+  LOGIN users that are members of a group (`user-docs/getting-started.md`).
 - **000025 Security operator and team reader access** (found by the `-restapi` integration tests of 000024):
   - a security operator writes the `mcp_server.*` and `mcp_primitive.*` outbox events of the reviews it makes, on enterprise and any team's servers (`app_operator_mcp_events`), and nothing else
   - security operators read every team's `mcp_events` and `mcp_usage_daily` (usage reports), as the PRD's ledger access says

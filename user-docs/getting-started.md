@@ -42,6 +42,11 @@ privileges on any table. The collaboration edge gets its own LOGIN user:
 CREATE USER afs_edge_login; GRANT rds_iam, afs_edge TO afs_edge_login;
 ```
 
+Each service connects with the startup parameter `role` set to its group role (from `-restapi` 1.3.0), so the session
+runs as the group and the schema's `current_user` checks in triggers and `SECURITY DEFINER` functions see `afs_gateway`,
+`afs_reconciler` and so on, not the LOGIN user. The LOGIN user must therefore be a member of the group (the `GRANT`
+above); `INHERIT` alone is not enough for those checks.
+
 Set connection limits on those LOGIN users as described in [configuration.md](configuration.md).
 
 ## 3. Apply the migrations
